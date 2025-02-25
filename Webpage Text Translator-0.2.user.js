@@ -2,7 +2,7 @@
 // @name         Webpage Text Translator
 // @author       Qing Wen
 // @namespace    http://tampermonkey.net/
-// @version      0.2
+// @version      0.3
 // @description  Extract and translate text from webpage
 // @match        https://*.syosetu.com/*/*/
 // @match        https://kakuyomu.jp/works/*/episodes/*
@@ -248,20 +248,17 @@ Operational parameters:
 1. For matching entries:
  - Preserve existing IDs
  - Always retain original translations of names and terms
- - Never modify or remove existing keys
- - Only append new keys when they represent genuine aliases or variations
 2. For novel entries:
  - Assign new IDs sequential to max_id
  - Create comprehensive key lists including all variants
 3. Value string rules:
  - Preserve original translations even if alternates appear in new updates
- - Include all valid aliases while prioritizing original translations
- - The new updates are obtained from a later portion of the story, update the description as needed. You should add relevant addtional information
+ - The new updates are obtained from a later portion of the story, update the description as needed. You should only add relevant addtional information
  - If the there is conflict in the information provided, discard the new updates
  - Merge similar fields, by combining the information
 4. Key management:
  - Existing keys are immutable and must be preserved exactly
- - New keys can be added but never replace existing ones
+ - Keys should only contain Japanese text, and never English strings
 
 Output schema:
 {
@@ -486,6 +483,7 @@ Once you are prepared and ready, write the translated sentence inside <output> a
 function constructUserPromptTranslation(previousLines, currentLine, dictionary) {
     const metadata = generateMetadata([...previousLines, currentLine].join(' '), dictionary) + '\n';
 
+    // Empty if nothing to add (the very first sentence)
     const preceedingText = previousLines
     ? `The following is a few lines of text that comes right BEFORE the sentence you are asked to translate. You should use them to help determine the context of the sentence you are asked to translate.
 ${previousLines.join('\n')}
@@ -499,11 +497,10 @@ When translating names, preserve honorifics if they are present in the original 
 '山田太郎' -> 'Yamada Taro'
 '花子様' -> 'Hanako-sama'
 </example>
-
+Text inside '「' and '」' are dialouge, and should be indicated as such in the transalted text with qdouble qoutes '"'.
 The text you are translating is extracted form a HTML webpage, and text inside brackets '(' and ')' could be originally ruby annotations of the preceding few characters.
 </instructions>
 <metadata>${metadata}${preceedingText}</metadata>
-
 Translate only the following sentence(s) from Japanese into English:
 ${currentLine}`;
 }
@@ -1079,6 +1076,9 @@ const DOMAIN_CONFIGS = {
                 pElements.forEach(p => {
                     const processedText = new TextPreProcessor(p.textContent)
                     .normalizeText()
+                    .processRubyAnnotations()
+                    .removeBrTags()
+                    .removeNonTextChars()
                     .trim()
                     .getText();
 
@@ -1106,6 +1106,9 @@ const DOMAIN_CONFIGS = {
             pElements.forEach((p, index) => {
                 const processedText = new TextPreProcessor(p.textContent)
                 .normalizeText()
+                .processRubyAnnotations()
+                .removeBrTags()
+                .removeNonTextChars()
                 .trim()
                 .getText();
 
