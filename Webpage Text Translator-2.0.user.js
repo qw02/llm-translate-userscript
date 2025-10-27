@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Webpage Text Translator
+// @author       Qing Wen
 // @homepage     https://github.com/qw02/llm-translate-userscript
-// @namespace    http://tampermonkey.net/
-// @version      2.0
+// @namespace    https://github.com/qw02
+// @version      2.1
 // @description  Translates webnovels with LLM using a RAG pipeline.
 // @match        https://*.syosetu.com/*/*/
 // @match        https://kakuyomu.jp/works/*/episodes/*
+// @match        file:///C:/Code/JS/Userscripts/tl-us-test.html
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM.xmlHttpRequest
@@ -17,35 +19,43 @@
    Config
    ================================================================================*/
 
+// Populated with avaliable models (those with API keys set) on load
+const modelsList = [];
+
+// API keys loaded during init from storage
 const PROVIDER_API_CONFIG = {
   openrouter: {
     apiKey: null,
-    endpoint: 'https://openrouter.ai/api/v1/chat/completions'
+    endpoint: 'https://openrouter.ai/api/v1/chat/completions',
   },
   openai: {
     apiKey: null,
-    endpoint: 'https://api.openai.com/v1/chat/completions'
+    endpoint: 'https://api.openai.com/v1/chat/completions',
   },
   anthropic: {
     apiKey: null,
-    endpoint: 'https://api.anthropic.com/v1/messages'
+    endpoint: 'https://api.anthropic.com/v1/messages',
   },
   deepseek: {
     apiKey: null,
-    endpoint: 'https://api.deepseek.com/v1/chat/completions'
+    endpoint: 'https://api.deepseek.com/v1/chat/completions',
   },
   xai: {
     apiKey: null,
-    endpoint: 'https://api.x.ai/v1/chat/completions'
+    endpoint: 'https://api.x.ai/v1/chat/completions',
   },
   google: {
     apiKey: null,
-    endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/'
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+  },
+  nanogpt: {
+    apiKey: null,
+    endpoint: 'https://nano-gpt.com/api/v1/chat/completions',
   },
   test: {
     apiKey: null,
-    endpoint: 'https://api.example.test/v1/chat/completions'
-  }
+    endpoint: 'https://api.example.test/v1/chat/completions',
+  },
 };
 
 const PROVIDER_CONFIGS = {
@@ -55,100 +65,118 @@ const PROVIDER_CONFIGS = {
       { id: '1-2', model: 'google/gemini-2.5-pro-preview', label: 'Gemini Pro 2.5', 'providers': ['Google AI Studio', 'Google'] },
       { id: '1-3', model: 'google/gemini-2.5-flash', label: 'Gemini Flash 2.5', 'providers': ['Google AI Studio', 'Google'] },
       { id: '1-4', model: 'google/gemini-2.5-flash-lite-preview-06-17', label: 'Gemini Flash-Lite 2.5', 'providers': ['Google AI Studio', 'Google'] },
-      { id: '1-5', model: 'z-ai/glm-4-32b', label: 'GLM 4 32b', 'providers': ['z-ai'] },
-      { id: '1-6', model: 'deepseek/deepseek-v3.2-exp', label: 'DeepSeek V3.2 (R)', 'providers': ['DeepInfra', 'DeepSeek', 'Novita'], 'reasoning': true },
-      { id: '1-7', model: 'x-ai/grok-4-fast', label: 'Grok 4 Fast (R)', 'providers': ['xAI'], 'reasoning': true },
-      { id: '1-8', model: 'x-ai/grok-4-fast', label: 'Grok 4 Fast', 'providers': ['xAI'], 'reasoning': false },
+      { id: '1-5', model: 'z-ai/glm-4-32b', label: 'GLM 4 32b', 'providers': ['z-ai'], tokens: 8192 },
+      { id: '1-6', model: 'deepseek/deepseek-v3.2-exp', label: 'DeepSeek V3.2 (R)', 'providers': ['DeepInfra', 'DeepSeek', 'Novita'], reasoning: true, tokens: 8192 },
+      { id: '1-7', model: 'x-ai/grok-4-fast', label: 'Grok 4 Fast (R)', 'providers': ['xAI'], reasoning: true, tokens: 8192 },
+      { id: '1-8', model: 'x-ai/grok-4-fast', label: 'Grok 4 Fast', 'providers': ['xAI'], reasoning: false },
     ],
     limits: {
       stage1: 'all',
       stage2: ['1-4', '1-5', '1-8'],
       stage3a: ['1-1', '1-3', '1-6', '1-7', '1-8'],
       stage3b: 'all',
-    }
+    },
   },
   openai: {
     models: [
-      { id: '3-1', model: 'gpt-5', label: 'GPT-5 (R: Low)', 'reasoning': 'low' },
-      { id: '3-2', model: 'gpt-5', label: 'GPT-5 (R: High)', 'reasoning': 'high' },
-      { id: '3-3', model: 'gpt-5-mini', label: 'GPT-5 Mini (R: Off)', 'reasoning': 'minimal' },
-      { id: '3-4', model: 'gpt-5-nano', label: 'GPT-5 Nano (R: Off)', 'reasoning': 'minimal' },
+      { id: '3-1', model: 'gpt-5', label: 'GPT-5 (R: Low)', reasoning: 'low' },
+      { id: '3-2', model: 'gpt-5', label: 'GPT-5 (R: High)', reasoning: 'high', tokens: 8192 },
+      { id: '3-3', model: 'gpt-5-mini', label: 'GPT-5 Mini (R: Off)', reasoning: 'minimal' },
+      { id: '3-4', model: 'gpt-5-nano', label: 'GPT-5 Nano (R: Off)', reasoning: 'minimal' },
     ],
     limits: {
       stage1: 'all',
       stage2: ['3-4'],
       stage3a: ['3-3', '3-4'],
       stage3b: 'all',
-    }
+    },
   },
   deepseek: {
     models: [
-      { id: '4-1', model: 'deepseek-chat', label: 'DeepSeek V3.2 Exp (R: Off)', 'reasoning': false },
-      { id: '4-2', model: 'deepseek-reasoner', label: 'DeepSeek V3.2 Exp (R: On)', 'reasoning': true }
+      { id: '4-1', model: 'deepseek-chat', label: 'DeepSeek V3.2 Exp (R: Off)', reasoning: false },
+      { id: '4-3', model: 'deepseek-reasoner', label: 'DeepSeek V3.2 Exp (R: On)', reasoning: true, tokens: 16384 },
     ],
     limits: {
       stage1: 'all',
       stage2: ['4-1'],
       stage3a: ['4-1'],
       stage3b: 'all',
-    }
+    },
   },
   xai: {
     models: [
-      { id: '5-1', model: 'grok-4-fast-reasoning', label: 'Grok 4 Fast (R)' },
-      { id: '5-2', model: 'grok-4-fast-non-reasoning', label: 'Grok 4 Fast', },
-      { id: '5-3', model: 'grok-4', label: 'Grok 4', }
+      { id: '5-1', model: 'grok-4-fast-reasoning', label: 'Grok 4 Fast (R)', tokens: 8192 },
+      { id: '5-2', model: 'grok-4-fast-non-reasoning', label: 'Grok 4 Fast' },
+      { id: '5-3', model: 'grok-4', label: 'Grok 4', tokens: 8192 },
     ],
     limits: {
       stage1: 'all',
       stage2: ['5-2'],
       stage3a: ['5-1', '5-2'],
       stage3b: ['5-1', '5-2'],
-    }
+    },
   },
   google: {
     models: [
-      { id: '6-1', model: 'gemini-2.5-pro', label: 'Gemini Pro 2.5 (R: Med)', 'reasoning': 'medium' },
-      { id: '6-2', model: 'gemini-2.5-pro', label: 'Gemini Pro 2.5 (R: Low)', 'reasoning': 'low' },
-      { id: '6-3', model: 'gemini-2.5-flash-lite-preview-09-2025', label: 'Gemini Flash-Lite 2.5 (R: Med)', 'reasoning': 'medium' },
-      { id: '6-4', model: 'gemini-2.5-flash-lite-preview-09-2025', label: 'Gemini Flash-Lite 2.5 (R: Off)', 'reasoning': 'minimal' },
-      { id: '6-5', model: 'gemini-2.5-flash-preview-09-2025', label: 'Gemini Flash 2.5 (R: Med)', 'reasoning': 'medium' },
-      { id: '6-6', model: 'gemini-2.5-flash-preview-09-2025', label: 'Gemini Flash 2.5 (R: Off)', 'reasoning': 'minimal' },
+      { id: '6-1', model: 'gemini-2.5-pro', label: 'Gemini Pro 2.5 (R: Med)', reasoning: 'medium', tokens: 8192 },
+      { id: '6-2', model: 'gemini-2.5-pro', label: 'Gemini Pro 2.5 (R: Low)', reasoning: 'low' },
+      { id: '6-3', model: 'gemini-2.5-flash-lite-preview-09-2025', label: 'Gemini Flash-Lite 2.5 (R: Med)', reasoning: 'medium', tokens: 8192 },
+      { id: '6-4', model: 'gemini-2.5-flash-lite-preview-09-2025', label: 'Gemini Flash-Lite 2.5 (R: Off)', reasoning: 'minimal' },
+      { id: '6-5', model: 'gemini-2.5-flash-preview-09-2025', label: 'Gemini Flash 2.5 (R: Med)', reasoning: 'medium', tokens: 8192 },
+      { id: '6-6', model: 'gemini-2.5-flash-preview-09-2025', label: 'Gemini Flash 2.5 (R: Off)', reasoning: 'minimal' },
     ],
     limits: {
       stage1: 'all',
       stage2: ['6-4', '6-6'],
       stage3a: ['6-3', '6-4', '6-5', '6-6'],
       stage3b: 'all',
-    }
+    },
   },
   anthropic: {
     models: [
       { id: '2-1', model: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-      { id: '2-2', model: 'claude-haiku-4-5', label: 'Haiku 4.5' }
+      { id: '2-2', model: 'claude-haiku-4-5', label: 'Haiku 4.5' },
     ],
     limits: {
       stage1: 'all',
       stage2: ['2-2'],
       stage3a: ['2-2'],
       stage3b: 'all',
-    }
+    },
+  },
+  nanogpt: {
+    models: [
+      { id: '7-1', model: 'deepseek-ai/deepseek-v3.2-exp', label: '[NG] DeepSeek V3.2 (R: Off)' },
+      { id: '7-2', model: 'deepseek-ai/deepseek-v3.2-exp-thinking', label: '[NG] DeepSeek V3.2 (R: On)' },
+      { id: '7-3', model: 'moonshotai/Kimi-K2-Instruct-0905', label: '[NG] Kimi K2 0905' },
+      { id: '7-4', model: 'z-ai/glm-4.6', label: '[NG] GLM 4.6' },
+    ],
+    limits: {
+      stage1: 'all',
+      stage2: ['7-1', '7-3'],
+      stage3a: ['7-1', '7-3', '7-4'],
+      stage3b: 'all',
+    },
   },
   test: {
     models: [
       { id: '99-1', model: 'test-model-1', label: 'Test Model #1' },
       { id: '99-2', model: 'test-model-2', label: 'Test Model #2' },
       { id: '99-3', model: 'test-model-3', label: 'Test Model #3' },
-      { id: '99-4', model: 'test-model-4', label: 'Test Model #4' }
+      { id: '99-4', model: 'test-model-4', label: 'Test Model #4' },
     ],
     limits: {
       stage1: 'all',
       stage2: 'all',
       stage3a: 'all',
       stage3b: 'all',
-    }
-  }
+    },
+  },
 };
+
+/* ================================================================================
+   Constants
+   ================================================================================*/
 
 // External API Rate limits
 const MAX_CONCURRENCY = 10;       // concurrent in-flight calls
@@ -156,13 +184,17 @@ const MAX_CALLS_PER_SEC = 10;     // calls/sec ceiling (token bucket)
 const MAX_RETRIES = 3;            // per-call retry limit
 const BASE_RETRY_DELAY_MS = 400;  // base backoff delay
 
+// Chunk size (num chars) for glossary generation. Low values can result in higher number of calls during merge process
+// 1~5k works for large models (DS V3, GPT-5, Gemini2.5 Pro etc.
+// Reduce to 100~500 for small (<20b) models
+const GLOSSARY_CHUNK_SIZE = 4000;
 
-/* ================================================================================
-   Global variables
-   ================================================================================*/
+// Chunk size for translation.
+const BATCH_CHAR_LIMIT = 1500;
+// How many paragraphs to include from the end of the previous batch.
+const OVERLAP_PARAGRAPH_COUNT = 5;
 
-let progressSection;
-const modelsList = [];
+const scriptPrefix = 'us-123456-'; // id prefix to prevent collision with existing HTML element on the page
 
 /* ================================================================================
    LLM API
@@ -213,7 +245,7 @@ class LLMClient {
         this._modelId,
         messages,
         this._modelConfig,
-        this._apiKey
+        this._apiKey,
       );
 
       const response = await this._makeHttpRequest(requestDetails);
@@ -253,12 +285,11 @@ class LLMClient {
         setTimeout(() => {
           const mockResponse = generateTestResponse(this._modelId, payload.messages);
           resolve(mockResponse);
-        }, Math.random() * 150 + 50); // 50 ~ 200 ms simulated latency
+        }, Math.random() * 50 + 200); // Simulated latency
       });
     }
 
     // PRODUCTION MODE: Normal HTTP request
-
     return new Promise((resolve, reject) => {
       GM.xmlHttpRequest({
         method: 'POST',
@@ -280,7 +311,7 @@ class LLMClient {
         },
         ontimeout: () => {
           reject(new Error('Request timed out'));
-        }
+        },
       });
     });
   }
@@ -322,8 +353,8 @@ function createOpenAIApiAdapter(overrides = {}) {
     modifyPayload = (payload, modelConfig) => payload,
     modifyResponse = (response) => ({
       completion: response.choices?.[0]?.message?.content ?? '',
-      reasoning: response.choices?.[0]?.message?.reasoning ?? null
-    })
+      reasoning: response.choices?.[0]?.message?.reasoning ?? null,
+    }),
   } = overrides;
 
   return {
@@ -332,18 +363,18 @@ function createOpenAIApiAdapter(overrides = {}) {
       let payload = {
         model: modelId,
         messages: messages,
-        max_tokens: 8192,
-        temperature: 0.4,
-        top_p: 0.95
+        max_tokens: modelConfig.tokens ?? 4096,
+        temperature: 0.6,
+        top_p: 0.95,
       };
 
-      // rovider-specific payload tweaks
+      // Provider-specific payload tweaks
       payload = modifyPayload(payload, modelConfig);
 
       return {
         url: endpoint,
         headers: modifyHeaders({ 'Content-Type': 'application/json' }, apiKey),
-        payload: payload
+        payload: payload,
       };
     },
 
@@ -355,7 +386,7 @@ function createOpenAIApiAdapter(overrides = {}) {
         throw new Error('Invalid response: missing choices.');
       }
       return modifyResponse(response);
-    }
+    },
   };
 }
 
@@ -368,18 +399,18 @@ const ApiAdapters = {
     modifyPayload(payload, modelConfig) {
       payload.provider = {
         order: modelConfig.providers,
-        allow_fallbacks: false
+        allow_fallbacks: false,
       }
 
       // Handle reasoning config
       const reasoningConfig = modelConfig.reasoning;
 
-      if (reasoningConfig) {
+      if (reasoningConfig !== undefined) {
         const reasoningPayload = {};
         const configType = typeof reasoningConfig;
 
         if (configType === 'boolean') {
-          reasoningPayload.enabled = configType; // True or false
+          reasoningPayload.enabled = true
         } else if (configType === 'number') {
           reasoningPayload.max_tokens = reasoningConfig;
         } else if (configType === 'string') {
@@ -389,10 +420,13 @@ const ApiAdapters = {
         }
         payload.reasoning = reasoningPayload;
 
+        if (configType === 'boolean' && reasoningConfig === false) {
+          delete payload.reasoning;
+        }
       }
 
       return payload;
-    }
+    },
   }),
 
   xai: createOpenAIApiAdapter({
@@ -404,7 +438,7 @@ const ApiAdapters = {
       }
 
       return payload;
-    }
+    },
   }),
 
   google: createOpenAIApiAdapter({
@@ -413,7 +447,7 @@ const ApiAdapters = {
         'minimal': 0,
         'low': 128,
         'medium': 2048,
-        'high': 8192
+        'high': 8192,
       };
 
       if (reasoningBudgetMap[modelConfig.reasoning] !== undefined) {
@@ -421,14 +455,14 @@ const ApiAdapters = {
           google: {
             thinking_config: {
               thinking_budget: reasoningBudgetMap[modelConfig.reasoning],
-              include_thoughts: true
-            }
-          }
+              include_thoughts: true,
+            },
+          },
         };
       }
 
       return payload;
-    }
+    },
   }),
 
   anthropic: {
@@ -442,15 +476,15 @@ const ApiAdapters = {
           'Content-Type': 'application/json',
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
-          ...(systemMessage ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {})
+          ...(systemMessage ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {}),
         },
         payload: {
           model: modelId,
           messages: userMessages,
           system: systemMessage,
-          max_tokens: 256,
-          temperature: 0.5
-        }
+          max_tokens: 8192,
+          temperature: 0.5,
+        },
       };
     },
     parseResponse(response) {
@@ -461,10 +495,12 @@ const ApiAdapters = {
         throw new Error('Invalid Anthropic response.');
       }
       return { completion: response.content[0].text, reasoning: null };
-    }
+    },
   },
 
-  test: createOpenAIApiAdapter()
+  nanogpt: createOpenAIApiAdapter(),
+
+  test: createOpenAIApiAdapter(),
 };
 
 /**
@@ -491,7 +527,7 @@ function findModelConfigById(modelId) {
  */
 function createLLMClientForStage(modelId) {
   if (modelId == null) {
-    throw new Error(`No model selected for ${stageKey}.`);
+    throw new Error(`No model selected for createLLMClientForStage().`);
   }
 
   const { providerKey, modelConfig } = findModelConfigById(modelId);
@@ -509,14 +545,15 @@ function createLLMClientForStage(modelId) {
     providerKey,
     modelConfig,
     apiConfig.apiKey,
-    apiConfig.endpoint
-    // The adapter registry is injected by default in the LLMClient constructor
+    apiConfig.endpoint,
+    // The adapter registry injected by LLMClient constructor
   );
 }
 
 // Helper to create a stage queue and its metrics
 function createStageQueue(modelId, label) {
   const client = createLLMClientForStage(modelId);
+  const progressSection = document.getElementById('progress-section')
   const metrics = new ProgressMetrics({ parent: progressSection, label });
   metrics.setInitialTasks(0);
   return new RequestQueue(client, metrics);
@@ -624,11 +661,6 @@ class ProgressMetrics {
     this._updateUI();
   }
 
-  recordError() {
-    this.errors += 1;
-    this._updateUI();
-  }
-
   getElapsedSeconds() {
     if (!this.startTime) return 0;
     const end = this.endTime ?? Date.now();
@@ -652,9 +684,14 @@ class ProgressMetrics {
     this.endTime = Date.now();
     this._stopUiTimer();
     const elapsed = this.getElapsedSeconds();
-    this.summaryText.textContent = `Done! Time: ${this._formatHuman(elapsed)}`;
-    this.summaryBar.style.display = 'flex';
-    this.setCollapsed(true);
+    if (this.errors > 0) {
+      this.summaryText.textContent = `Completed with Errors: ${this._formatReadableTime(elapsed)}`;
+      this.summaryBar.style.display = 'flex';
+    } else {
+      this.summaryText.textContent = `Done! Time: ${this._formatReadableTime(elapsed)}`;
+      this.summaryBar.style.display = 'flex';
+      this.setCollapsed(true);
+    }
   }
 
   setCollapsed(collapsed) {
@@ -684,7 +721,7 @@ class ProgressMetrics {
     return `${mm}:${ss}`;
   }
 
-  _formatHuman(seconds) {
+  _formatReadableTime(seconds) {
     if (!isFinite(seconds)) return '--';
     const s = Math.max(0, Math.round(seconds));
     const m = Math.floor(s / 60);
@@ -728,8 +765,8 @@ class RequestQueue {
     this.client = client;
     this.metrics = progressMetrics;
 
-    this.queue = [];            // pending tasks
-    this.active = 0;            // in-flight tasks
+    this.queue = []; // pending tasks
+    this.active = 0; // in-flight tasks
     this.tokens = MAX_CALLS_PER_SEC;
     this._nextTaskId = 1;
     this._drainScheduled = false;
@@ -739,9 +776,17 @@ class RequestQueue {
       this.tokens = MAX_CALLS_PER_SEC;
       this._drain();
     }, 1000);
+
+    this.inUse = true;
   }
 
   dispose() {
+    if (this.inUse === false) {
+      // Ensure queue can only be deleted once
+      return;
+    }
+
+    this.inUse = false;
     clearInterval(this._refillTimer);
     this.metrics.finalizeAndCollapse();
   }
@@ -756,7 +801,7 @@ class RequestQueue {
       taskId,
       prompt,
       callback,
-      attempts: 0
+      attempts: 0,
     };
 
     const p = new Promise((resolve) => {
@@ -821,7 +866,7 @@ class RequestQueue {
         response,
         prompt: task.prompt,
         taskId: task.taskId,
-        attempts: task.attempts
+        attempts: task.attempts,
       };
 
       // Call user callback safely
@@ -855,7 +900,7 @@ class RequestQueue {
           error: err,
           prompt: task.prompt,
           taskId: task.taskId,
-          attempts: task.attempts
+          attempts: task.attempts,
         };
 
         try {
@@ -865,6 +910,7 @@ class RequestQueue {
         }
 
         this.metrics.markResolved(false);
+        errorHandler();
         task._resolve(finalResult);
       }
     } finally {
@@ -906,7 +952,7 @@ const DOMAIN_CONFIGS = {
         }
       });
       return paragraphMap;
-    }
+    },
   },
 
 
@@ -939,8 +985,10 @@ const DOMAIN_CONFIGS = {
         });
       });
       return paragraphMap;
-    }
+    },
   },
+
+
   'kakuyomu.jp': {
     domainCode: '2',
     getSeriesId: (url) => {
@@ -964,14 +1012,14 @@ const DOMAIN_CONFIGS = {
             .trim()
             .getText();
 
-          if (p.id) {
+          if (p.id && !p.classList.contains('blank') && processedText) {
             paragraphMap.set(p.id, processedText);
           }
         });
       });
       return paragraphMap;
-    }
-  }
+    },
+  },
 };
 
 class DomainManager {
@@ -983,7 +1031,7 @@ class DomainManager {
     if (window.location.protocol === 'file:') {
       return {
         ...DOMAIN_CONFIGS['file'],
-        domain: 'file'
+        domain: 'file',
       };
     }
 
@@ -992,7 +1040,7 @@ class DomainManager {
       if (hostname.endsWith(domain)) {
         return {
           ...config,
-          domain
+          domain,
         };
       }
     }
@@ -1028,28 +1076,88 @@ function extractTextFromWebpage(domainManager) {
  * @returns {string} - The extracted content, or a fallback value ('###') if the tag is not found.
  */
 function extractTextFromTag(str, tag) {
-  const regex = new RegExp(`.*<${tag}>(.*?)<\/${tag}>`, 's');
-  const match = str.match(regex);
+  // Escape special regex characters in tag
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  if (match && match[1] !== undefined) {
-    return match[1].trim();
-  } else {
-    const openingTagIndex = str.indexOf(`<${tag}>`);
-    if (openingTagIndex !== -1) {
-      console.warn(`Warning: Closing tag </${tag}> not found. Returning all text after opening tag.\n${str}`);
-      return str.slice(openingTagIndex + tag.length + 2).trim();
-    } else {
-      console.warn(`Error: Opening tag <${tag}> not found.\n${str}`);
-      // Look for the last closing XML tag of any kind
-      const lastClosingTagMatch = str.match(/<\/[^>]+>(?!.*<\/[^>]+>)/s);
-      if (lastClosingTagMatch) {
-        const lastClosingTagIndex = lastClosingTagMatch.index + lastClosingTagMatch[0].length;
-        return str.slice(lastClosingTagIndex).trim();
-      }
-      // If no closing tags are found at all, return a fallback
-      return '###';
-    }
+  const openingTag = `<${tag}>`;
+  const closingTag = `</${tag}>`;
+
+  // Try to extract all balanced tag pairs
+  const balancedRegex = new RegExp(`<${escapedTag}>(.*?)<\\/${escapedTag}>`, 'gs');
+  const matches = [...str.matchAll(balancedRegex)];
+
+  if (matches.length > 0) {
+    return matches.map(match => match[1].trim()).join('\n');
   }
+
+  // Count opening and closing tags
+  const openingMatches = str.match(new RegExp(`<${escapedTag}>`, 'g'));
+  const closingMatches = str.match(new RegExp(`<\\/${escapedTag}>`, 'g'));
+  const openingCount = openingMatches ? openingMatches.length : 0;
+  const closingCount = closingMatches ? closingMatches.length : 0;
+
+  // Helper to find all indices of a substring
+  const findAllIndices = (text, substring) => {
+    const indices = [];
+    let index = 0;
+    while ((index = text.indexOf(substring, index)) !== -1) {
+      indices.push(index);
+      index += substring.length;
+    }
+    return indices;
+  };
+
+  // Case 1: Missing first opening tag (one more closing than opening)
+  if (closingCount === openingCount + 1 && closingCount > 0) {
+    console.warn(`Warning: Missing first opening tag <${tag}>. Attempting recovery.\n${str}`);
+
+    const openingIndices = findAllIndices(str, openingTag);
+    const closingIndices = findAllIndices(str, closingTag);
+    const extractedTexts = [];
+
+    // First segment: from start to first closing tag
+    extractedTexts.push(str.slice(0, closingIndices[0]).trim());
+
+    // Remaining segments: balanced pairs
+    for (let i = 0; i < openingIndices.length; i++) {
+      const start = openingIndices[i] + openingTag.length;
+      const end = closingIndices[i + 1];
+      extractedTexts.push(str.slice(start, end).trim());
+    }
+
+    return extractedTexts.join('\n');
+  }
+
+  // Case 2: Missing last closing tag (one more opening than closing)
+  if (openingCount === closingCount + 1 && openingCount > 0) {
+    console.warn(`Warning: Missing last closing tag </${tag}>. Attempting recovery.\n${str}`);
+
+    const openingIndices = findAllIndices(str, openingTag);
+    const closingIndices = findAllIndices(str, closingTag);
+    const extractedTexts = [];
+
+    // All but last: balanced pairs
+    for (let i = 0; i < closingIndices.length; i++) {
+      const start = openingIndices[i] + openingTag.length;
+      const end = closingIndices[i];
+      extractedTexts.push(str.slice(start, end).trim());
+    }
+
+    // Last segment: from last opening to end
+    const lastStart = openingIndices[openingIndices.length - 1] + openingTag.length;
+    extractedTexts.push(str.slice(lastStart).trim());
+
+    return extractedTexts.join('\n');
+  }
+
+  // Case 3: No tags found or too broken
+  if (openingCount === 0 && closingCount === 0) {
+    console.warn(`Warning: No tags <${tag}> found.\n${str}`);
+  } else {
+    console.warn(`Warning: Tags too malformed to recover. Opening: ${openingCount}, Closing: ${closingCount}.\n${str}`);
+  }
+
+  return '###';
 }
 
 /**
@@ -1180,7 +1288,7 @@ function saveDictionary(domainManager, dictionary) {
   const sortEntriesByValueLength = (dict) => {
     return {
       ...dict,
-      entries: [...dict.entries].sort((a, b) => b.value.length - a.value.length)
+      entries: [...dict.entries].sort((a, b) => b.value.length - a.value.length),
     };
   }
 
@@ -1209,28 +1317,16 @@ function loadApiKeys() {
   // Validate that both configs have the same provider sets
   const apiConfigProviders = new Set(Object.keys(PROVIDER_API_CONFIG));
   const modelConfigProviders = new Set(Object.keys(PROVIDER_CONFIGS));
-
   if (!areSetsEqual(apiConfigProviders, modelConfigProviders)) {
     console.warn('Provider mismatch detected between API config and model config');
-    const missingInApi = [...modelConfigProviders].filter(p => !apiConfigProviders.has(p));
-    const missingInModels = [...apiConfigProviders].filter(p => !modelConfigProviders.has(p));
-
-    if (missingInApi.length > 0) {
-      console.warn(`Providers in model config but missing in API config: ${missingInApi.join(', ')}`);
-    }
-    if (missingInModels.length > 0) {
-      console.warn(`Providers in API config but missing in model config: ${missingInModels.join(', ')}`);
-    }
   }
 
-  // Clear the models list before repopulating
+  // Populate modelsList with avalible models for use (those with API keys set)
   modelsList.length = 0;
 
   Object.keys(PROVIDER_API_CONFIG).forEach(provider => {
     if (savedKeys[provider]) {
       PROVIDER_API_CONFIG[provider].apiKey = savedKeys[provider];
-
-      // Add model IDs to the list if provider has a valid API key
       if (PROVIDER_CONFIGS[provider] && PROVIDER_CONFIGS[provider].models) {
         PROVIDER_CONFIGS[provider].models.forEach(model => {
           modelsList.push(model.id);
@@ -1243,13 +1339,7 @@ function loadApiKeys() {
 }
 
 function saveApiKeys(keys) {
-  // Validate input is a proper object
-  if (typeof keys !== 'object' || keys === null) {
-    console.warn('Invalid keys object provided to saveApiKeys');
-    return false;
-  }
-
-  // Filter out non-string values and empty strings if desired
+  // Filter out empty strings
   const sanitizedKeys = {};
   Object.keys(keys).forEach(provider => {
     if (typeof keys[provider] === 'string' && keys[provider].trim() !== '') {
@@ -1259,12 +1349,10 @@ function saveApiKeys(keys) {
 
   GM_setValue("apiKeys", sanitizedKeys);
 
-  // Update the runtime config as well
+  // Also update runtime config
   Object.keys(PROVIDER_API_CONFIG).forEach(provider => {
     PROVIDER_API_CONFIG[provider].apiKey = sanitizedKeys[provider] || null;
   });
-
-  return true;
 }
 
 /* ================================================================================
@@ -1318,10 +1406,30 @@ class TextPreProcessor {
   }
 }
 
+function textPostProcess(str) {
+  let result = str.trim();
+
+  // Transform to smart quotes "..." -> “...”
+  const prefixes = ["\"", "＂", "“"];
+  const maxOffset = 3;
+
+  if (
+    prefixes.some(prefix =>
+      Array.from({ length: maxOffset + 1 }, (_, i) =>
+        str.startsWith(prefix, i),
+      ).some(Boolean),
+    )) {
+    result = result.replace(/^"/, '“').replace(/"([^"]*)$/, '”$1');
+  }
+
+  return result;
+}
+
 function updateParagraphContent(id, newContent) {
-  const paragraph = document.querySelector(`p[id="${id}"]`);
+  const paragraph = document.getElementById(id);
   if (paragraph) {
     paragraph.innerHTML = newContent;
+    paragraph.classList.add(`${scriptPrefix}text`);
   }
 }
 
@@ -1334,21 +1442,21 @@ function updateParagraphContent(id, newContent) {
  * Main orchestrator for glossary generation and updates
  */
 class GlossaryManager {
-  constructor(queue_stage1, queue_stage2) {
-    this.stage1 = new Stage1Generator(queue_stage1);
-    this.stage2 = new Stage2Updater(queue_stage2);
+  constructor(uiConfig) {
+    this.stage1 = new Stage1Generator(uiConfig);
+    this.stage2 = new Stage2Updater(uiConfig);
   }
 
   async generateAndUpdateDictionary(dictionary, texts) {
-    console.log('Starting glossary generation...');
-
     // Stage 1: Generate new glossary entries from text chunks
     const newEntries = await this.stage1.generate(texts);
     console.log(`Stage 1 complete: generated ${newEntries.length} new entries`);
+    // this.queue_stage1.dispose();
 
     // Stage 2: Merge new entries with existing dictionary
     const updatedDictionary = await this.stage2.update(dictionary, newEntries);
     console.log(`Stage 2 complete: dictionary now has ${updatedDictionary.entries.length} entries`);
+    // this.queue_stage2.dispose();
 
     return updatedDictionary;
   }
@@ -1359,27 +1467,36 @@ class GlossaryManager {
  * Does NOT see existing dictionary
  */
 class Stage1Generator {
-  constructor(queue) {
-    this.queue = queue;
+  constructor(uiConfig) {
+    this.uiConfig = uiConfig;
+    this._queue = null;
+  }
+
+  get queue() {
+    if (!this._queue) {
+      this._queue = createStageQueue(this.uiConfig.stage1, 'Glossary Generation');
+    }
+    return this._queue;
   }
 
   async generate(texts) {
-    // Chunk texts into manageable pieces
+    // Chunk texts into blocks to fit in LLM context window
     const chunks = this._chunkTexts(texts);
-    console.log(`Stage 1: Processing ${chunks.length} text chunks`);
 
     // Create prompts for each chunk
     const prompts = chunks.map(chunk => this._createPrompt(chunk));
 
-    // Enqueue all prompts in parallel
+    // Run inference in parallel
     const results = await this.queue.enqueueAll(
       prompts,
       (result) => {
         if (!result.ok) {
           console.error(`[Stage 1] Task ${result.taskId} failed:`, result.error);
         }
-      }
+      },
     );
+
+    this.queue.dispose();
 
     // Consolidate all responses into single entry array
     return this._consolidateResponses(results);
@@ -1387,7 +1504,7 @@ class Stage1Generator {
 
   _chunkTexts(texts) {
     const chunks = [];
-    const maxChunkSize = 3000;
+    const maxChunkSize = GLOSSARY_CHUNK_SIZE;
     let currentChunk = '';
 
     for (const [_, text] of texts) {
@@ -1464,7 +1581,7 @@ You will be provided the raw text delimited with <text> XML tags.
 
     return {
       system: system_prompt,
-      user: `<text>\n${chunk}\n</text>`
+      user: `<text>\n${chunk}\n</text>`,
     };
   }
 
@@ -1492,56 +1609,231 @@ You will be provided the raw text delimited with <text> XML tags.
  * Validate Stage 1 response structure
  */
 function validateStage1Response(obj) {
-  // TODO: Validate response has correct structure
-  // Must have: { entries: [{ keys: [], value: string }, ...] }
-  return obj && Array.isArray(obj.entries);
+  if (!obj || !Array.isArray(obj.entries)) {
+    return false;
+  }
+
+  const valuePattern = /^\[.*] .*$/;
+
+  return obj.entries.every(entry => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+
+    const { keys, value } = entry;
+
+    if (!Array.isArray(keys) || keys.length === 0) {
+      return false;
+    }
+
+    const allKeysAreStrings = keys.every(key => typeof key === 'string');
+    const allKeysAreUnique = new Set(keys).size === keys.length;
+
+    if (!allKeysAreStrings || !allKeysAreUnique) {
+      return false;
+    }
+
+    if (typeof value !== 'string' || !valuePattern.test(value)) {
+      return false;
+    }
+
+    // If we reach here, object should be in expected shape
+    return true;
+  });
+}
+
+// Minimal async mutex to separate pending entries selection / schedulding from dictionary update / mutation
+class AsyncMutex {
+  constructor() {
+    this._locked = false;
+    this._waiters = [];
+  }
+
+  acquire() {
+    return new Promise((resolve) => {
+      const take = () => {
+        this._locked = true;
+        resolve(this._release.bind(this));
+      };
+      if (!this._locked) take();
+      else this._waiters.push(take);
+    });
+  }
+
+  _release() {
+    this._locked = false;
+    const next = this._waiters.shift();
+    if (next) next();
+  }
+
+  async runExclusive(fn) {
+    const release = await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
 }
 
 /**
- * Stage 2: Merge new entries with existing dictionary
- * Handles conflict resolution via LLM
+ * Stage 2: Merge new entries with existing dictionary (parallel, lock-safe)
+ * - Part 1: Select the largest possible batch of non-conflicting new entries.
+ *   - Zero-conflict entries are added immediately (no LLM).
+ *   - Conflicting entries are sent to LLM (in parallel via RequestQueue).
+ * - Part 2: Send LLM requests for all selected conflicting entries.
+ * - Part 3: When a request resolves, apply changes under a mutex, unlock keys, then try to schedule more.
+ *
+ * Locking model:
+ * - For each new entry E with conflicts, lock set L(E) = keys(E) ∪ ⋃ keys(conflict entries of E).
+ * - Two entries can be processed concurrently iff their lock sets are disjoint.
+ * - Unlock uses the original L(E) computed at scheduling time.
  */
 class Stage2Updater {
-  constructor(queue) {
-    this.queue = queue;
+  constructor(uiConfig) {
+    this.uiConfig = uiConfig;
+    this._queue = null;
     this.nextId = 1;
+    this._mutex = new AsyncMutex();
+    this._usedKeys = new Set(); // union of lock sets of all in-flight tasks
+  }
+
+  get queue() {
+    if (!this._queue) {
+      this._queue = createStageQueue(this.uiConfig.stage2, 'Glossary Update');
+    }
+    return this._queue;
   }
 
   async update(existingDict, newEntries) {
-    // Clone to avoid mutating original
     const workingDict = this._cloneDictionary(existingDict);
-
-    // Initialize ID counter
     this.nextId = this._getMaxId(workingDict) + 1;
 
-    console.log(`Stage 2: Processing ${newEntries.length} new entries`);
+    // Pending work (preserve relative order to reduce starvation)
+    const pending = newEntries.map((entry, idx) => ({ idx, entry }));
 
-    // Process each new entry sequentially (due to mutation)
-    for (let i = 0; i < newEntries.length; i++) {
-      const newEntry = newEntries[i];
-      console.log(`Processing entry ${i + 1}/${newEntries.length}...`);
+    // In-flight requests: [{ id, p }]
+    const inFlight = [];
+    let seq = 1;
 
-      try {
-        await this._processEntry(workingDict, newEntry);
-      } catch (err) {
-        console.error('Failed to process entry:', newEntry, err);
+    // Find a maximal batch of entries whose lock sets do not intersect _usedKeys.
+    const scheduleAvailable = async () => {
+      await this._mutex.runExclusive(async () => {
+        // Try to schedule until either no candidate fits
+        for (let i = 0; i < pending.length;) {
+          const candidate = pending[i];
+
+          const { conflicts, lockKeys } = this._computeLocks(workingDict, candidate.entry);
+
+          // No conflict: add immediately, no LLM needed
+          if (conflicts.length === 0) {
+            this._addEntry(workingDict, candidate.entry);
+            pending.splice(i, 1);
+            // Don't increment i since we removed current index
+            continue;
+          }
+
+          // Has conflicts: check if we can schedule LLM request
+          if (this._intersects(lockKeys, this._usedKeys)) {
+            i += 1; // cannot schedule this one now; try next
+            continue;
+          }
+
+          // Lock keys for this task
+          for (const k of lockKeys) this._usedKeys.add(k);
+
+          // Build prompt and enqueue (Part 2)
+          const prompt = this._createConflictPrompt(conflicts, candidate.entry);
+
+          const basePromise = this.queue.enqueueTask(prompt, () => {
+          });
+
+          // Attach metadata and a local sequence id so we can identify which promise completed.
+          const meta = {
+            entry: candidate.entry,
+            conflicts,
+            lockKeys: Array.from(lockKeys),
+          };
+          const id = seq++;
+
+          const wrapped = basePromise.then((result) => ({ result, meta, id }));
+
+          inFlight.push({ id, p: wrapped });
+
+          // Remove from pending once scheduled
+          pending.splice(i, 1);
+          // Do not increment i here, as we removed the current index
+        }
+      });
+    };
+
+    // Kick off the first batch
+    await scheduleAvailable();
+
+    // Process completions as they arrive
+    while (pending.length > 0 || inFlight.length > 0) {
+      if (inFlight.length === 0) {
+        // No work in-flight; try scheduling again
+        await scheduleAvailable();
+        if (inFlight.length === 0) break; // nothing schedulable (should not happen with empty usedKeys)
       }
+
+      // Wait for one completion
+      const { result, meta, id } = await Promise.race(inFlight.map((it) => it.p));
+
+      // Apply LLM result under mutex, then unlock and attempt more scheduling
+      await this._mutex.runExclusive(async () => {
+        if (result.ok) {
+          try {
+            const parsed = parseJSONFromLLM(result.response);
+            const actions = this._normalizeActions(parsed);
+            const validationError = this._validateActions(actions, meta.conflicts);
+            if (!validationError) {
+              this._executeActions(workingDict, actions, meta.entry);
+            } else {
+              console.error('Action validation failed:', validationError);
+              // Treat as no-op
+            }
+          } catch (err) {
+            console.error('Failed to parse/execute actions:', err);
+            // Treat as no-op
+          }
+        } else {
+          console.warn('Glossary update LLM call failed.');
+          // Treat as no-op
+        }
+
+        // Unlock original lock keys
+        for (const k of meta.lockKeys) this._usedKeys.delete(k);
+
+        // Remove this promise from in-flight
+        const idx = inFlight.findIndex((it) => it.id === id);
+        if (idx !== -1) inFlight.splice(idx, 1);
+      });
+
+      // See if freeing these keys opens new scheduling opportunities
+      await scheduleAvailable();
     }
 
+    this.queue.dispose();
     return workingDict;
   }
 
-  async _processEntry(workingDict, newEntry) {
-    // Find conflicting entries (shared keys)
+  // Compute conflicts (existing entries that intersect keys) and the lock set
+  _computeLocks(workingDict, newEntry) {
     const conflicts = this._findConflicts(workingDict, newEntry);
-
-    if (conflicts.length === 0) {
-      // No conflict: simply add to dictionary
-      this._addEntry(workingDict, newEntry);
-    } else {
-      // Conflict detected: ask LLM to resolve
-      await this._resolveConflict(workingDict, conflicts, newEntry);
+    const lockKeys = new Set(newEntry.keys);
+    for (const c of conflicts) {
+      for (const k of c.keys) lockKeys.add(k);
     }
+    return { conflicts, lockKeys };
+  }
+
+  _intersects(keysSet, usedKeys) {
+    for (const k of keysSet) {
+      if (usedKeys.has(k)) return true;
+    }
+    return false;
   }
 
   _findConflicts(workingDict, newEntry) {
@@ -1563,58 +1855,19 @@ class Stage2Updater {
     const newEntry = {
       id: this.nextId++,
       keys: [...entry.keys],
-      value: entry.value
+      value: entry.value,
     };
     workingDict.entries.push(newEntry);
   }
 
-  async _resolveConflict(workingDict, conflicts, newEntry) {
-    // Create prompt with conflicting entries only
-    const prompt = this._createConflictPrompt(conflicts, newEntry);
-
-    // Make LLM call to resolve conflict
-    const result = await this.queue.enqueueTask(
-      prompt,
-      (result) => {
-        if (!result.ok) {
-          console.error('[Stage 2] Conflict resolution failed:', result.error);
-        }
-      }
-    );
-
-    if (result.ok) {
-      // Parse and execute LLM-proposed actions
-      try {
-        const parsed = parseJSONFromLLM(result.response);
-        const actions = this._normalizeActions(parsed);
-
-        // Validate actions before executing
-        const validationError = this._validateActions(actions, conflicts);
-        if (validationError) {
-          console.error('Action validation failed:', validationError);
-          return;
-        }
-
-        // Execute validated actions
-        this._executeActions(workingDict, actions, newEntry);
-      } catch (err) {
-        console.error('Failed to parse/execute actions:', err);
-      }
-    } else {
-      // On LLM failure, conservatively add the new entry
-      console.warn('Glossary update LLM call failed.');
-    }
-  }
-
   _createConflictPrompt(conflicts, newEntry) {
     const existingDict = {
-      entries: conflicts
+      entries: conflicts,
     };
 
     const newUpdates = {
-      entries: [newEntry]
+      entries: [newEntry],
     };
-
 
     const systemPrompt = `
 You are in charge of merging and updating the glossary or dictionary for a translation system using a RAG pipeline.
@@ -1774,7 +2027,7 @@ ${JSON.stringify(newUpdates, null, 2)}
 
     return {
       system: systemPrompt,
-      user: userPrompt
+      user: userPrompt,
     };
   }
 
@@ -1882,7 +2135,6 @@ ${JSON.stringify(newUpdates, null, 2)}
 
     return null; // Valid
   }
-
 
   _executeActions(workingDict, actions, newEntry) {
     for (const action of actions) {
@@ -1997,11 +2249,10 @@ class PromptManager {
 You are a highly skilled translator specializing in Japanese web novels, tasked with translating sentences from Japanese to English. Your goal is to produce translations that are not only accurate but also capture the original tone, style, nuance, and character voices of the source text. You must ensure the output is fluent and natural-sounding English.
 `.trim();
 
-
     const instructions = {
       narrative: undefined,
       nameOrder: undefined,
-      honorifics: undefined
+      honorifics: undefined,
     }
 
     switch (this.uiConfig.narrative) {
@@ -2097,7 +2348,7 @@ Input: \`空は青く澄み渡っていた。\`
 Output: <translation>The sky was clear and blue.</translation>
 </example>
 
-For non Japanese text, simply repeat them back as it is. Your response will be used to replace the orginal text by a script.
+For non Japanese text, simply repeat them back as it is. Your response will be used to replace the original text by a script.
 <example>
 Input: \`==--==--==\`
 Output: <translation> ==--==--== <translation>
@@ -2216,25 +2467,25 @@ Potential Output Snippet: \`..., [65, 77], [78, 85], [86, 95], ...\`
     const precedingTextContext = precedingText ? `\nHere are the lines immediately preceding the text to be translated, for context:\n${precedingText}` : '';
 
     const metadataBlock = (dictionaryMetadata || precedingTextContext)
-      ? `<metadata>\n${dictionaryMetadata}\n</metadata>\n${precedingTextContext}`
-      : '';
+                          ? `<metadata>\n${dictionaryMetadata}\n</metadata>\n${precedingTextContext}`
+                          : '';
 
     const customInstructions = (this.uiConfig.customInstruction)
-      ? `
+                               ? `
 ### Additional Notes:
 ${this.uiConfig.customInstruction}
       `.trim()
-      : '';
+                               : '';
 
     const user = [
       customInstructions,
       metadataBlock,
-      `Translate the following Japanese text into English:\n${textToTranslate}`
+      `Translate the following Japanese text into English:\n${textToTranslate}`,
     ].filter(Boolean).join('\n\n');
 
     return {
       system: this.baseTranslationSystem + '\n\n' + this.baseTranslationDev,
-      user: user
+      user: user,
     };
   }
 
@@ -2260,7 +2511,7 @@ End: ${endIndex}
 
     return {
       system: this.baseChunkingSystem,
-      user: userPrompt
+      user: userPrompt,
     };
   }
 }
@@ -2271,14 +2522,33 @@ End: ${endIndex}
  */
 class TranslationStrategy {
   /**
-   * @param {object} queues - Contains the request queues for different stages (e.g., translationQueue).
    * @param {object} uiConfig - The configuration object from the UI.
    * @param {PromptManager} promptManager - The stateful prompt builder for the session.
    */
-  constructor(queues, uiConfig, promptManager) {
-    this.queues = queues;
+  constructor(uiConfig, promptManager) {
+    // this.queues = {};
+    // if (uiConfig.stage3a) {
+    //   this.chunkQueue = createStageQueue(uiConfig.stage3a, 'Text Chunking');
+    // }
+    // this.translationQueue = createStageQueue(uiConfig.stage3b, 'Translation');
+    this._chunkQueue = null;
+    this._translationQueue = null;
     this.uiConfig = uiConfig;
     this.promptManager = promptManager;
+  }
+
+  get chunkQueue() {
+    if (!this._chunkQueue) {
+      this._chunkQueue = createStageQueue(this.uiConfig.stage3a, 'Text Chunking');
+    }
+    return this._chunkQueue;
+  }
+
+  get translationQueue() {
+    if (!this._translationQueue) {
+      this._translationQueue = createStageQueue(this.uiConfig.stage3b, 'Translation');
+    }
+    return this._translationQueue;
   }
 
   /**
@@ -2292,7 +2562,11 @@ class TranslationStrategy {
   }
 
   processResponse(rawLLMResponse) {
-    return extractTextFromTag(rawLLMResponse, 'translation');
+    return extractTextFromTag(rawLLMResponse, 'translation')
+      .replace(/\n+/g, '\n') // Compresses newlines chars (2+ -> 1)
+      .split('\n')
+      .map(textPostProcess)
+      .join('\n');
   }
 }
 
@@ -2302,12 +2576,11 @@ class TranslationStrategy {
  */
 class SingleLineStrategy extends TranslationStrategy {
   /**
-   * @param {object} queues - Contains the request queues.
    * @param {object} uiConfig - The configuration object from the UI.
    * @param {PromptManager} promptManager - The stateful prompt builder for the session.
    */
-  constructor(queues, uiConfig, promptManager) {
-    super(queues, uiConfig, promptManager);
+  constructor(uiConfig, promptManager) {
+    super(uiConfig, promptManager);
   }
 
   async execute(paragraphMap) {
@@ -2327,7 +2600,7 @@ class SingleLineStrategy extends TranslationStrategy {
 
       const prompt = this.promptManager.getTranslationPrompt(text, precedingLines);
 
-      const task = this.queues.translationQueue.enqueueTask(prompt, (result) => {
+      const task = this.translationQueue.enqueueTask(prompt, (result) => {
         if (result.ok) {
           const translatedText = this.processResponse(result.response);
           updateParagraphContent(id, translatedText);
@@ -2339,23 +2612,20 @@ class SingleLineStrategy extends TranslationStrategy {
     }
 
     await Promise.all(tasks);
+    this.translationQueue.dispose();
   }
 }
 
 class ChunkingStrategy extends TranslationStrategy {
   /**
-   * @param {object} queues - Contains the request queues.
    * @param {object} uiConfig - The configuration object from the UI.
    * @param {PromptManager} promptManager - The stateful prompt builder for the session.
    */
-  constructor(queues, uiConfig, promptManager) {
-    super(queues, uiConfig, promptManager);
+  constructor(uiConfig, promptManager) {
+    super(uiConfig, promptManager);
   }
 
   async execute(paragraphMap) {
-    // --- Configuration for the batching process ---
-    const BATCH_CHAR_LIMIT = 1500;      // Max characters to send to the chunking LLM at once.
-    const OVERLAP_PARAGRAPH_COUNT = 5; // How many paragraphs to include from the end of the previous batch.
     const numPreviousLines = this.uiConfig.contextLines;
 
     const allParagraphs = Array.from(paragraphMap.entries())
@@ -2363,7 +2633,6 @@ class ChunkingStrategy extends TranslationStrategy {
 
     // ----------------------------------------
     //  Part 1: Generate chunking suggestions in overlapping batches
-    // ----------------------------------------
 
     const chunkingBatches = [];
     let currentStartIndex = 0;
@@ -2399,14 +2668,14 @@ class ChunkingStrategy extends TranslationStrategy {
 
     const chunkingPromises = chunkingBatches.map(batch => {
       const prompt = this.promptManager.getChunkingPrompt(batch);
-      return this.queues.chunkQueue.enqueueTask(prompt);
+      return this.chunkQueue.enqueueTask(prompt);
     });
 
     const chunkingResults = await Promise.all(chunkingPromises);
+    this.chunkQueue.dispose();
 
     // ----------------------------------------
     //  Part 2: Merge the fuzzy suggestions into clean intervals
-    // ----------------------------------------
 
     const llmSuggestions = [];
     for (const result of chunkingResults) {
@@ -2431,63 +2700,71 @@ class ChunkingStrategy extends TranslationStrategy {
 
     // ----------------------------------------
     //  Part 3: Translate using the final, merged intervals
-    // ----------------------------------------
-
-    // LLM may not handle preserving leading and trailing white spaces well
-    function countNewlines(str) {
-      const frontMatch = str.match(/^(\n)*/);
-      const front = frontMatch ? frontMatch[0].length : 0;
-
-      const backMatch = str.match(/(\n)*$/);
-      const back = backMatch ? backMatch[0].length : 0;
-
-      return { front, back };
-    }
 
     const translationTasks = [];
     for (const interval of finalIntervals) {
-      // The intervals are 1-based, so we adjust for our 0-based array
-      const [start, end] = [interval[0] - 1, interval[1]];
+      const [start, end] = [interval[0] - 1, interval[1]]; // Intervals are 1-indexed
       const chunkParagraphs = allParagraphs.slice(start, end);
 
       if (chunkParagraphs.length === 0) continue;
 
-      const rawCombinedText = chunkParagraphs.map(p => p.text).join('\n');
-      const whitespace = countNewlines(rawCombinedText);
-      const textToTranslate = rawCombinedText.trim()
+      // Build context from preceding lines
+      const precedingLines = allParagraphs
+        .slice(Math.max(0, start - numPreviousLines), start)
+        .map(p => p.text)
+        .join('\n');
 
-      // Gather preceding lines for context
-      const precedingParagraphs = allParagraphs.slice(Math.max(0, start - numPreviousLines), start);
-      const precedingText = precedingParagraphs.map(p => p.text).join('\n');
+      // Join chunk paragraphs with newlines for translation
+      const chunkText = chunkParagraphs.map(p => p.text).join('\n');
 
-      const prompt = this.promptManager.getTranslationPrompt(textToTranslate, precedingText);
+      const prompt = this.promptManager.getTranslationPrompt(chunkText, precedingLines);
 
-      const task = this.queues.translationQueue.enqueueTask(prompt, (result) => {
+      const task = this.translationQueue.enqueueTask(prompt, (result) => {
         if (result.ok) {
-          // Translated text might not have the same breaks,
-          // so we update only the first paragraph and hide the rest.
-          const firstParagraphId = chunkParagraphs[0].id;
           const translatedText = this.processResponse(result.response);
+          const translatedLines = translatedText.split('\n');
 
-          // Add back whitespace
-          const formattedText = '<br>'.repeat(whitespace.start)
-            + translatedText.replace(/\n/g, '<br>　')
-            + '<br>'.repeat(whitespace.end);
+          const numExpected = chunkParagraphs.length;
+          const numReceived = translatedLines.length;
 
-          updateParagraphContent(firstParagraphId, formattedText);
+          if (numReceived === numExpected) {
+            // Ideal case: one-to-one mapping
+            for (let i = 0; i < numExpected; i++) {
+              updateParagraphContent(chunkParagraphs[i].id, translatedLines[i]);
+            }
 
-          for (let i = 1; i < chunkParagraphs.length; i++) {
-            const pElement = document.getElementById(chunkParagraphs[i].id);
-            if (pElement) pElement.style.display = 'none';
+          } else if (numReceived > numExpected) {
+            // More lines than paragraphs: map first n-1, join extras into last
+            for (let i = 0; i < numExpected - 1; i++) {
+              updateParagraphContent(chunkParagraphs[i].id, translatedLines[i]);
+            }
+            const extraLines = translatedLines.slice(numExpected - 1);
+            const wrappedLines = extraLines.map(line => `<span>${line}</span>`);
+            const combinedContent = wrappedLines.join('<br>');
+            updateParagraphContent(chunkParagraphs[numExpected - 1].id, combinedContent);
+
+          } else {
+            // Fewer lines than paragraphs: map available lines, hide the rest
+            for (let i = 0; i < numReceived; i++) {
+              updateParagraphContent(chunkParagraphs[i].id, translatedLines[i]);
+            }
+            for (let i = numReceived; i < numExpected; i++) {
+              const elem = document.getElementById(chunkParagraphs[i].id);
+              if (elem) {
+                elem.style.display = 'none';
+              }
+            }
           }
         } else {
-          console.error(`Failed to translate chunk [${interval.join(', ')}]:`, result.error);
+          console.error(`Failed to translate chunk:`, result.error);
         }
       });
+
       translationTasks.push(task);
     }
 
     await Promise.all(translationTasks);
+    this.translationQueue.dispose();
   }
 }
 
@@ -2496,15 +2773,15 @@ class ChunkingStrategy extends TranslationStrategy {
  */
 class EntirePageStrategy extends TranslationStrategy {
   /**
-   * @param {object} queues - Contains the request queues.
    * @param {object} uiConfig - The configuration object from the UI.
    * @param {PromptManager} promptManager - The stateful prompt builder for the session.
    */
-  constructor(queues, uiConfig, promptManager) {
-    super(queues, uiConfig, promptManager);
+  constructor(uiConfig, promptManager) {
+    super(uiConfig, promptManager);
   }
 
   async execute(paragraphMap) {
+    // Sort by numeric order. id should end in a number [...01, ...02, ...03] or [...1, ...2, ...10, ...11]
     const combinedRawText = Array.from(paragraphMap.entries())
       .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
       .map(([_, v]) => v)
@@ -2512,10 +2789,20 @@ class EntirePageStrategy extends TranslationStrategy {
 
     const prompt = this.promptManager.getTranslationPrompt(combinedRawText, '');
 
-    const task = this.queues.translationQueue.enqueueTask(prompt, (result) => {
+    const task = this.translationQueue.enqueueTask(prompt, (result) => {
       if (result.ok) {
         const translatedText = this.processResponse(result.response);
-        updateParagraphContent(id, translatedText);
+        const formattedText = translatedText.replace(/\r\n|\r|\n/g, '<br>');
+
+
+        const [firstKey, ...remaining] = paragraphMap.keys();
+        updateParagraphContent(firstKey, formattedText);
+        remaining.forEach(id => {
+          const elem = document.getElementById(id);
+          if (elem) {
+            elem.style.display = 'none';
+          }
+        });
       } else {
         console.error(`Failed to translate paragraph ${id}:`, result.error);
       }
@@ -2523,8 +2810,8 @@ class EntirePageStrategy extends TranslationStrategy {
 
     tasks.push(task);
     await Promise.all(tasks);
+    this.translationQueue.dispose();
   }
-
 }
 
 /* ================================================================================
@@ -2578,7 +2865,6 @@ const mergeFuzzyIntervals = ({ totalParagraphs, llmSuggestions, fuzz = 2, fallba
   // ---------------------
   // Fallback chunker
   // Used if we cannot parse/normalize any LLM suggestions.
-  // ---------------------
   const chunkEveryK = (size) => {
     const k = Math.max(1, Number(size || 1));
     const out = [];
@@ -2591,7 +2877,7 @@ const mergeFuzzyIntervals = ({ totalParagraphs, llmSuggestions, fuzz = 2, fallba
 
   // ---------------------
   // Utilities
-  // ---------------------
+
   const isNumeric = (v) => typeof v === "number" && Number.isFinite(v);
   const toInt = (v) => {
     const n = Number(v);
@@ -2811,7 +3097,7 @@ const mergeFuzzyIntervals = ({ totalParagraphs, llmSuggestions, fuzz = 2, fallba
 
   // ---------------------
   // Pipeline
-  // ---------------------
+
   // 1) Parse & normalize LLM suggestions
   const rawPairs = [];
   collectPairs(llmSuggestions, rawPairs);
@@ -2861,49 +3147,35 @@ async function main() {
 
   // Stage 1 & 2: Generate new glossary entries with raw text
   if (uiConfig.stage1 && uiConfig.stage2) {
-    const queue_stage1 = createStageQueue(uiConfig.stage1, 'Glossary Generation');
-    const queue_stage2 = createStageQueue(uiConfig.stage2, 'Glossary Update');
-
-    const glossaryManager = new GlossaryManager(queue_stage1, queue_stage2);
+    const glossaryManager = new GlossaryManager(uiConfig);
     const updatedDictionary = await glossaryManager.generateAndUpdateDictionary(loadDictionary(domainManager), texts);
 
     // Save updated dictionary to storage
     saveDictionary(domainManager, updatedDictionary);
-    queue_stage1.dispose();
-    queue_stage2.dispose();
   }
 
-  let queue_stage3a;
-  if (uiConfig.stage3a) {
-    queue_stage3a = createStageQueue(uiConfig.stage3a, 'Text Chunking');
-  }
-  const queue_stage3b = createStageQueue(uiConfig.stage3b, 'Translation');
   const dictionary = loadDictionary(domainManager);
 
   // Start translation process
-  await translateTexts({ chunkQueue: queue_stage3a, translationQueue: queue_stage3b }, dictionary, uiConfig, texts);
+  await translateTexts(dictionary, uiConfig, texts);
 
-  // In case some error cause the queues to not be cleared.
-  if (queue_stage3a) {
-    queue_stage3a.dispose();
-  }
-  queue_stage3b.dispose();
+  // Done
 }
 
-async function translateTexts(queues, dictionary, uiConfig, paragraphMap) {
+async function translateTexts(dictionary, uiConfig, paragraphMap) {
   const promptManager = new PromptManager(uiConfig, dictionary);
 
   let strategy;
 
   switch (uiConfig.translationMethod) {
     case 'chunk':
-      strategy = new ChunkingStrategy(queues, uiConfig, promptManager);
+      strategy = new ChunkingStrategy(uiConfig, promptManager);
       break;
     case 'single':
-      strategy = new SingleLineStrategy(queues, uiConfig, promptManager);
+      strategy = new SingleLineStrategy(uiConfig, promptManager);
       break;
     case 'entire':
-      strategy = new EntirePageStrategy(queues, uiConfig, promptManager);
+      strategy = new EntirePageStrategy(uiConfig, promptManager);
       break;
     default:
       throw new Error(`Unknown translation method: ${uiConfig.translationMethod}`);
@@ -2923,67 +3195,67 @@ class UIConfigValidator {
       min: 1,
       max: 10,
       default: 3,
-      selector: '#context-lines-input'
+      selector: '#context-lines-input',
     },
     narrative: {
       type: 'enum',
       allowed: ['first', 'third', 'auto'],
       default: 'auto',
-      selector: '#narrative-select'
+      selector: '#narrative-select',
     },
     honorifics: {
       type: 'enum-nullable',
       allowed: ['preserve', 'nil'],
       default: 'nil',
       selector: '#honorifics-checkbox',
-      transform: (checked) => checked ? 'preserve' : 'nil'
+      transform: (checked) => checked ? 'preserve' : 'nil',
     },
     nameOrder: {
       type: 'enum',
       allowed: ['en', 'jp'],
       default: 'jp',
-      selector: '#name-order-select'
+      selector: '#name-order-select',
     },
     customInstruction: {
       type: 'string-nullable',
       default: null,
       selector: '#custom-instruction-textarea',
-      transform: (value) => value.trim() || null
+      transform: (value) => value.trim() || null,
     },
     translationMethod: {
       type: 'enum',
       allowed: ['chunk', 'single', 'entire'],
       default: 'chunk',
-      selector: '#translation-method-select'
+      selector: '#translation-method-select',
     },
     stage1: {
       type: 'enum-nullable',
       allowedFrom: 'modelsList',
       default: null,
       selector: '#stage1-select',
-      transform: (value) => value || null
+      transform: (value) => value || null,
     },
     stage2: {
       type: 'enum-nullable',
       allowedFrom: 'modelsList',
       default: null,
       selector: '#stage2-select',
-      transform: (value) => value || null
+      transform: (value) => value || null,
     },
     stage3a: {
       type: 'enum-nullable',
       allowedFrom: 'modelsList',
       default: null,
       selector: '#stage3a-select',
-      transform: (value) => value || null
+      transform: (value) => value || null,
     },
     stage3b: {
       type: 'enum-nullable',
       allowedFrom: 'modelsList',
       default: null,
       selector: '#stage3b-select',
-      transform: (value) => value || null
-    }
+      transform: (value) => value || null,
+    },
   };
 
   // Cross-field validation rules
@@ -2997,11 +3269,11 @@ class UIConfigValidator {
         if (stage1Set !== stage2Set) {
           return {
             isValid: false,
-            message: 'stage1 and stage2 must both be set, or both be unset'
+            message: 'stage1 and stage2 must both be set, or both be unset',
           };
         }
         return { isValid: true };
-      }
+      },
     },
     {
       name: 'stage3a-chunk-requirement',
@@ -3009,11 +3281,11 @@ class UIConfigValidator {
         if (config.translationMethod === 'chunk' && config.stage3a === null) {
           return {
             isValid: false,
-            message: 'stage3a must be set when translationMethod is "chunk"'
+            message: 'stage3a must be set when translationMethod is "chunk"',
           };
         }
         return { isValid: true };
-      }
+      },
     },
     {
       name: 'stage-model-limits-compliance',
@@ -3032,7 +3304,7 @@ class UIConfigValidator {
           if (!selectedModel) {
             return {
               isValid: false,
-              message: `Selected model '${modelId}' for '${stage}' is not available`
+              message: `Selected model '${modelId}' for '${stage}' is not available`,
             };
           }
 
@@ -3048,14 +3320,14 @@ class UIConfigValidator {
           if (stageLimits !== 'all' && (!Array.isArray(stageLimits) || !stageLimits.includes(modelId))) {
             return {
               isValid: false,
-              message: `Model '${selectedModel.label}' (${modelId}) is not allowed for '${stage}'`
+              message: `Model '${selectedModel.label}' (${modelId}) is not allowed for '${stage}'`,
             };
           }
         }
 
         return { isValid: true };
-      }
-    }
+      },
+    },
   ];
 
   /**
@@ -3085,8 +3357,8 @@ class UIConfigValidator {
 
         // Determine the allowed values: from dynamicLists, from static spec.allowed, or undefined
         const allowedValues = spec.allowedFrom
-          ? dynamicLists[spec.allowedFrom]
-          : spec.allowed;
+                              ? dynamicLists[spec.allowedFrom]
+                              : spec.allowed;
 
         const validatedValue = this.validateValue(key, value, spec, allowedValues);
 
@@ -3148,7 +3420,7 @@ class UIConfigValidator {
         if (!allowedValues.includes(value)) {
           return {
             isValid: false,
-            reason: `Must be one of: ${allowedValues.join(', ')}`
+            reason: `Must be one of: ${allowedValues.join(', ')}`,
           };
         }
         return { isValid: true, value };
@@ -3157,7 +3429,7 @@ class UIConfigValidator {
         if (value !== null && !allowedValues.includes(value)) {
           return {
             isValid: false,
-            reason: `Must be one of: ${allowedValues.join(', ')} or null`
+            reason: `Must be one of: ${allowedValues.join(', ')} or null`,
           };
         }
         return { isValid: true, value };
@@ -3184,7 +3456,7 @@ function getAvailableModels() {
           id: model.id,
           provider: provider,
           label: model.label,
-          ...model
+          ...model,
         });
       }
     }
@@ -3372,7 +3644,7 @@ function createCollapsibleSection(title, content) {
 
   const header = document.createElement('div');
   header.style.cssText = `
-    padding: 10px;
+    padding: 4px;
     background: #f0f0f0;
     cursor: pointer;
     user-select: none;
@@ -3391,6 +3663,7 @@ function createCollapsibleSection(title, content) {
 
   const titleSpan = document.createElement('span');
   titleSpan.textContent = title;
+  titleSpan.style.cssText = 'font-size: 12px; padding: 0 0 0 8px;';
 
   const indicator = document.createElement('span');
   indicator.textContent = '+';
@@ -3404,7 +3677,7 @@ function createCollapsibleSection(title, content) {
     display: none;
     padding: 12px;
     background: #f8f9fa;
-    max-height: 400px;
+    max-height: 800px;
     overflow-y: auto;
   `;
   contentWrapper.appendChild(content);
@@ -3436,11 +3709,49 @@ function createModelsSection(availableModels) {
     return section;
   };
 
+  // Create Skip Glossary checkbox section
+  const skipGlossarySection = document.createElement('div');
+  skipGlossarySection.style.cssText = 'margin-bottom: 12px;';
+
+  const skipGlossaryLabel = document.createElement('label');
+  skipGlossaryLabel.style.cssText = `
+    display: flex;
+    align-items: center;
+    font-weight: 600;
+    color: #333;
+    cursor: pointer;
+  `;
+
+  const skipGlossaryCheckbox = document.createElement('input');
+  skipGlossaryCheckbox.type = 'checkbox';
+  skipGlossaryCheckbox.id = 'skip-glossary-checkbox';
+  skipGlossaryCheckbox.style.cssText = `
+    all: revert;
+    appearance: auto;
+    margin-right: 6px;
+  `;
+
+  const skipGlossaryText = document.createTextNode('Skip Glossary Generation');
+
+  skipGlossaryLabel.appendChild(skipGlossaryCheckbox);
+  skipGlossaryLabel.appendChild(skipGlossaryText);
+  skipGlossarySection.appendChild(skipGlossaryLabel);
+
+  container.appendChild(skipGlossarySection);
+
+
+  // Create model dropdown selectors
+  // Create a container for both glossary selectors
+  const glossaryContainer = document.createElement('div');
+  glossaryContainer.id = 'glossary-selectors-container';
+
   const stage1Select = createModelSelector('stage1-select', availableModels, 'stage1');
-  container.appendChild(createSection('Glossary Generate', stage1Select));
+  glossaryContainer.appendChild(createSection('Glossary Generate', stage1Select));
 
   const stage2Select = createModelSelector('stage2-select', availableModels, 'stage2');
-  container.appendChild(createSection('Glossary Update', stage2Select));
+  glossaryContainer.appendChild(createSection('Glossary Update', stage2Select));
+
+  container.appendChild(glossaryContainer);
 
   const methodSelect = document.createElement('select');
   methodSelect.id = 'translation-method-select';
@@ -3449,7 +3760,7 @@ function createModelsSection(availableModels) {
   const methods = [
     { value: 'single', label: 'Single (Line by Line)' },
     { value: 'chunk', label: 'Chunked (Smart Splitting)' },
-    { value: 'entire', label: 'Entire (All at Once)' }
+    { value: 'entire', label: 'Entire (All at Once)' },
   ];
 
   for (const method of methods) {
@@ -3468,6 +3779,13 @@ function createModelsSection(availableModels) {
   container.appendChild(createSection('Translation', stage3bSelect));
 
   return container;
+}
+
+function updateGlossarySelectorsVisibility(skipGlossary) {
+  const glossaryContainer = document.getElementById('glossary-selectors-container');
+  if (glossaryContainer) {
+    glossaryContainer.style.display = skipGlossary ? 'none' : 'block';
+  }
 }
 
 function createOptionsSection(availableModels) {
@@ -3518,7 +3836,7 @@ function createOptionsSection(availableModels) {
   const narratives = [
     { value: 'auto', label: 'Auto-detect' },
     { value: 'first', label: 'First Person' },
-    { value: 'third', label: 'Third Person' }
+    { value: 'third', label: 'Third Person' },
   ];
 
   for (const narrative of narratives) {
@@ -3539,7 +3857,11 @@ function createOptionsSection(availableModels) {
   const honorificsCheckbox = document.createElement('input');
   honorificsCheckbox.type = 'checkbox';
   honorificsCheckbox.id = 'honorifics-checkbox';
-  honorificsCheckbox.style.cssText = 'margin-right: 6px;';
+  honorificsCheckbox.style.cssText = `
+    all: revert;
+    appearance: auto;
+    margin-right: 6px;
+  `;
 
   const honorificsLabel = document.createElement('label');
   honorificsLabel.textContent = 'Preserve Japanese honorifics';
@@ -3556,7 +3878,7 @@ function createOptionsSection(availableModels) {
 
   const nameOrders = [
     { value: 'jp', label: 'Japanese (Family Name First)' },
-    { value: 'en', label: 'Western (Given Name First)' }
+    { value: 'en', label: 'Western (Given Name First)' },
   ];
 
   for (const order of nameOrders) {
@@ -3667,13 +3989,34 @@ async function saveUIState(state) {
   }
 }
 
+async function saveGlossaryBackup(stage1Value, stage2Value) {
+  try {
+    await GM.setValue('glossary_skip_backup', {
+      stage1: stage1Value,
+      stage2: stage2Value,
+    });
+  } catch (error) {
+    console.error('[Glossary Skip] Failed to save backup:', error);
+  }
+}
+
+async function loadGlossaryBackup() {
+  try {
+    return await GM.getValue('glossary_skip_backup', null);
+  } catch (error) {
+    console.error('[Glossary Skip] Failed to load backup:', error);
+    return null;
+  }
+}
+
 function getCurrentUIState() {
   const stage3aSelect = document.getElementById('stage3a-select');
   const translationMethod = document.getElementById('translation-method-select').value;
+  const skipGlossary = document.getElementById('skip-glossary-checkbox').checked;
 
   return {
-    stage1: document.getElementById('stage1-select').value || null,
-    stage2: document.getElementById('stage2-select').value || null,
+    stage1: skipGlossary ? null : (document.getElementById('stage1-select').value || null),
+    stage2: skipGlossary ? null : (document.getElementById('stage2-select').value || null),
     stage3a: (translationMethod === 'chunk' && stage3aSelect) ? (stage3aSelect.value || null) : null,
     stage3b: document.getElementById('stage3b-select').value || null,
     translationMethod: translationMethod,
@@ -3681,7 +4024,8 @@ function getCurrentUIState() {
     narrative: document.getElementById('narrative-select').value,
     honorifics: document.getElementById('honorifics-checkbox').checked,
     nameOrder: document.getElementById('name-order-select').value,
-    customInstructions: document.getElementById('custom-instruction-textarea').value.trim() || null
+    customInstructions: document.getElementById('custom-instruction-textarea').value.trim() || null,
+    skipGlossary: skipGlossary,
   };
 }
 
@@ -3699,8 +4043,17 @@ function applyUIState(state) {
     }
   };
 
-  setValue('stage1-select', state.stage1);
-  setValue('stage2-select', state.stage2);
+  setValue('skip-glossary-checkbox', state.skipGlossary || false);
+
+  // If skip glossary is enabled, set stage1/stage2 to empty, otherwise apply saved values
+  if (state.skipGlossary) {
+    setValue('stage1-select', '');
+    setValue('stage2-select', '');
+  } else {
+    setValue('stage1-select', state.stage1);
+    setValue('stage2-select', state.stage2);
+  }
+
   setValue('stage3a-select', state.stage3a);
   setValue('stage3b-select', state.stage3b);
   setValue('translation-method-select', state.translationMethod);
@@ -3712,6 +4065,9 @@ function applyUIState(state) {
 
   // Trigger visibility update for stage3a
   updateStage3aVisibility(state.translationMethod);
+
+  // Update glossary selectors visibility after other state is applied
+  updateGlossarySelectorsVisibility(state.skipGlossary || false);
 }
 
 function updateStage3aVisibility(translationMethod) {
@@ -3722,25 +4078,58 @@ function updateStage3aVisibility(translationMethod) {
 }
 
 function setupUIEventListeners() {
+  // Skip glossary checkbox change
+  const skipGlossaryCheckbox = document.getElementById('skip-glossary-checkbox');
+
+  skipGlossaryCheckbox.addEventListener('change', async (e) => {
+    const stage1Select = document.getElementById('stage1-select');
+    const stage2Select = document.getElementById('stage2-select');
+    const isChecked = e.target.checked;
+
+    if (isChecked) {
+      // Save current values before clearing
+      const currentStage1 = stage1Select.value || null;
+      const currentStage2 = stage2Select.value || null;
+      await saveGlossaryBackup(currentStage1, currentStage2);
+
+      // Clear the selectors
+      stage1Select.value = '';
+      stage2Select.value = '';
+    } else {
+      // Restore saved values
+      const backup = await loadGlossaryBackup();
+      if (backup) {
+        stage1Select.value = backup.stage1 || '';
+        stage2Select.value = backup.stage2 || '';
+      }
+    }
+
+    // Update visibility
+    updateGlossarySelectorsVisibility(isChecked);
+
+    // Save UI state
+    await saveUIState(getCurrentUIState());
+  });
+
   // Translation method change
   const methodSelect = document.getElementById('translation-method-select');
-  methodSelect.addEventListener('change', (e) => {
+  methodSelect.addEventListener('change', async (e) => {
     updateStage3aVisibility(e.target.value);
-    void saveUIState(getCurrentUIState());
+    await saveUIState(getCurrentUIState());
   });
 
   // Save state on any change
   const autoSaveElements = [
     'stage1-select', 'stage2-select', 'stage3a-select', 'stage3b-select',
     'context-lines-input', 'narrative-select', 'honorifics-checkbox',
-    'name-order-select', 'custom-instruction-textarea'
+    'name-order-select', 'custom-instruction-textarea',
   ];
 
   for (const id of autoSaveElements) {
     const element = document.getElementById(id);
     if (element) {
-      element.addEventListener('change', () => {
-        void saveUIState(getCurrentUIState());
+      element.addEventListener('change', async () => {
+        await saveUIState(getCurrentUIState());
       });
     }
   }
@@ -3789,13 +4178,13 @@ function createButton(label, onClick) {
   const button = document.createElement('button');
   button.textContent = label;
   button.style.cssText = `
-    padding: 8px 16px;
+    padding: 4px 16px;
     background: #4a90e2;
     color: white;
     border: none;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 12px;
     margin: 5px;
     transition: background 0.3s;
   `;
@@ -4338,7 +4727,7 @@ function createDictionaryEditorDialog() {
       const index = parseInt(entry.dataset.index);
       const entryData = currentEntries[index];
       const matchesKeys = entryData.keys.some(key =>
-        key.toLowerCase().includes(searchTerm)
+        key.toLowerCase().includes(searchTerm),
       );
       const matchesValue = entryData.value.toLowerCase().includes(searchTerm);
 
@@ -4403,6 +4792,95 @@ function createDictionaryEditorDialog() {
   document.body.appendChild(overlay);
 }
 
+function createScrollableFloatingBox(topPos, leftPos) {
+  // Wrapper handles positioning and scrolling
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = `
+    position: fixed;
+    top: ${topPos}px;
+    left: ${leftPos}px;
+    min-width: 200px;
+    z-index: 1000;
+    background-color: white;
+    border: 1px solid #ccc;
+    box-shadow: 0px 0px 10px rgba(0,0,0,0.1);
+  `;
+
+  // Inner content grows naturally
+  const content = document.createElement('div');
+  content.style.cssText = `
+    padding: 25px 10px 10px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  `;
+
+  wrapper.appendChild(content);
+
+  const BOTTOM_MARGIN = 20; // Minimum clearance from viewport bottom
+
+  function updateScrollability() {
+    const maxAvailableHeight = window.innerHeight - topPos - BOTTOM_MARGIN;
+    const contentHeight = content.scrollHeight;
+
+    if (contentHeight > maxAvailableHeight) {
+      wrapper.style.maxHeight = `${maxAvailableHeight}px`;
+      wrapper.style.overflowY = 'auto';
+    } else {
+      wrapper.style.maxHeight = 'none';
+      wrapper.style.overflowY = 'visible';
+    }
+  }
+
+  // Watch for content size changes
+  const resizeObserver = new ResizeObserver(updateScrollability);
+  resizeObserver.observe(content);
+
+  // Handle window resize
+  window.addEventListener('resize', updateScrollability);
+
+  // Initial check after DOM settles
+  setTimeout(updateScrollability, 0);
+
+  return { wrapper, content };
+}
+
+function addStyles() {
+  if (document.getElementById(`${scriptPrefix}-style`)) return;
+  const style = document.createElement('style');
+  style.id = `${scriptPrefix}-style`;
+  style.textContent = `
+    .${scriptPrefix}text {
+      font-family: "Georgia", serif;
+      text-indent: 1.5em;
+    }
+    .${scriptPrefix}text span {
+      display: block;
+      text-indent: 1.5em;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+/* ================================================================================
+   Error Handling
+   ================================================================================*/
+
+let errorCount = 0;
+
+function errorHandler() {
+  const display = document.getElementById('error-display');
+
+  errorCount++;
+
+  // Un-hide it on the first error
+  if (errorCount === 1) {
+    display.style.display = 'block';
+  }
+
+  display.textContent = `Something went wrong, check console for details. Errors: ${errorCount}`;
+}
+
 /* ================================================================================
    Init
    ================================================================================*/
@@ -4413,67 +4891,54 @@ function init() {
 
   // Button to collapse floating box UI
   const collapseButton = document.createElement('button');
-  collapseButton.textContent = '▼'; // Down arrow when expanded
+  collapseButton.textContent = '▼';
   collapseButton.id = 'userscript-collapseButton';
-  collapseButton.style.cssText = `
-        float: left;
-        position: absolute;
-        top: 5px;
-        right: 5px;
-        border: none;
-        background: none;
-        cursor: pointer;
-        padding: 5px;
-        font-size: 12px;
-    `;
+  collapseButton.style.cssText = `  
+    float: left;  
+    position: absolute;  
+    top: 5px;  
+    right: 5px;  
+    border: none;  
+    background: none;  
+    cursor: pointer;  
+    padding: 5px;  
+    font-size: 12px;  
+  `;
 
   // Create the mini button (initially hidden)
   const miniButton = document.createElement('div');
-  miniButton.style.cssText = `
-        position: fixed;
-        top: 60px;
-        left: 3px;
-        width: 30px;
-        height: 30px;
-        background-color: white;
-        border: 1px solid #ccc;
-        box-shadow: 0px 0px 10px rgba(0,0,0,0.1);
-        display: none;
-        justify-content: center;
-        align-items: center;
-        cursor: pointer;
-        z-index: 1000;
-    `;
-  miniButton.textContent = '▲'; // Up arrow when collapsed
+  miniButton.style.cssText = `  
+    position: fixed;  
+    top: 60px;  
+    left: 3px;  
+    width: 30px;  
+    height: 30px;  
+    background-color: white;  
+    border: 1px solid #ccc;  
+    box-shadow: 0px 0px 10px rgba(0,0,0,0.1);  
+    display: none;  
+    justify-content: center;  
+    align-items: center;  
+    cursor: pointer;  
+    z-index: 1000;  
+  `;
+  miniButton.textContent = '▲';
   document.body.appendChild(miniButton);
 
-  // Create the floating box
-  const floatingBox = document.createElement('div');
-  floatingBox.style.cssText = `
-        position: fixed;
-        top: 60px;
-        left: 3px;
-        z-index: 1000;
-        padding: 25px 10px 10px 10px;
-        background-color: white;
-        border: 1px solid #ccc;
-        box-shadow: 0px 0px 10px rgba(0,0,0,0.1);
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-    `;
+  // Create scrollable floating box structure
+  const { wrapper: floatingBoxWrapper, content: floatingBox } = createScrollableFloatingBox(60, 3);
 
   // Add the collapse button to floating box
   floatingBox.appendChild(collapseButton);
-  document.body.appendChild(floatingBox);
+  document.body.appendChild(floatingBoxWrapper);
 
-  // Toggle function
+  // Toggle function - now operates on the wrapper
   function toggleUI() {
-    if (floatingBox.style.display !== 'none') {
-      floatingBox.style.display = 'none';
+    if (floatingBoxWrapper.style.display !== 'none') {
+      floatingBoxWrapper.style.display = 'none';
       miniButton.style.display = 'flex';
     } else {
-      floatingBox.style.display = 'flex';
+      floatingBoxWrapper.style.display = 'block';
       miniButton.style.display = 'none';
     }
   }
@@ -4485,14 +4950,16 @@ function init() {
   const title = document.createElement('h2');
   title.textContent = 'Translation Control';
   title.style.cssText = `
-    margin: 0 0 12px 0;
-    font-size: 18px;
+    margin: 0 0 0 0;
+    padding: 0 0 0 0;
+    font-size: 14px;
     color: #333;
   `;
   floatingBox.appendChild(title);
 
   // Error display
   const errorDisplay = document.createElement('div');
+  errorDisplay.id = 'error-display';
   errorDisplay.style.cssText = `
     display: none;
     padding: 8px;
@@ -4507,23 +4974,17 @@ function init() {
 
   // ------------------------------
   // API keys dialog box
-  // ------------------------------
   const apiKeysButton = createButton('API Keys', openApiKeysDialog);
   floatingBox.appendChild(apiKeysButton);
 
   // ------------------------------
   // Metadata edit dialog box
-  // ------------------------------
-
   const openEditorBtn = createButton('Dictionary Editor', createDictionaryEditorDialog)
   floatingBox.appendChild(openEditorBtn);
 
-
   // ------------------------------
-  // Start translation
-  // ------------------------------
-  // Add translate button to floating box (starts the main process)
-  const translateButton = createButton('Translate', () => {
+  // Start translation button
+  const translateButton = createButton('Start Translation', () => {
     errorDisplay.style.display = 'none';
 
     const validationResult = UIConfigValidator.validate({ modelsList });
@@ -4533,17 +4994,14 @@ function init() {
       return;
     }
 
-    translateButton.disabled = true;
+    translateButton.disabled = true; // Should only be needed to be run once per page, for most sites.
     translateButton.textContent = 'Translating...';
 
     main()
       .then(() => {
-        console.log('[Translation] Complete!');
         translateButton.textContent = 'Translation Complete!';
-        setTimeout(() => {
-          translateButton.disabled = false;
-          translateButton.textContent = 'Start Translation';
-        }, 2000);
+        const collaspeButton = document.getElementById('userscript-collapseButton');
+        collaspeButton.click(); // Hide UI once done
       })
       .catch(error => {
         console.error('[Translation] Error:', error);
@@ -4557,13 +5015,14 @@ function init() {
 
   // ------------------------------
   // Progress display
-  // ------------------------------
-  progressSection = document.createElement('div');
+  const progressSection = document.createElement('div');
   progressSection.id = 'progress-section';
   progressSection.style.marginTop = '8px';
   floatingBox.appendChild(progressSection);
 
   void initializeUI(floatingBox);
+
+  addStyles();
 }
 
 window.addEventListener('load', init);
@@ -4651,9 +5110,9 @@ function generateTestResponse(modelId, messages) {
   ]
 }
 \`\`\`
-`.trim()
-        }
-      }]
+`.trim(),
+        },
+      }],
     };
   }
 
@@ -4661,9 +5120,9 @@ function generateTestResponse(modelId, messages) {
     return {
       choices: [{
         message: {
-          content: `{ "action": "none" }`
-        }
-      }]
+          content: `{ "action": "none" }`,
+        },
+      }],
     };
   }
 
@@ -4671,9 +5130,9 @@ function generateTestResponse(modelId, messages) {
     return {
       choices: [{
         message: {
-          content: `${simChunkerResponse(userMessage)}`
-        }
-      }]
+          content: `${simChunkerResponse(userMessage)}`,
+        },
+      }],
     };
   }
 
@@ -4682,11 +5141,11 @@ function generateTestResponse(modelId, messages) {
     return {
       choices: [{
         message: {
-          content: `<translation>${extractOriginalRaw(userMessage)}</translation>`
+          content: `<translation>${extractOriginalRaw(userMessage)}</translation>`,
           // content: `<translation>Test Translation #${TEST_RESPONSE_COUNTER}, Echo: ${extractOriginalRaw(userMessage)}</translation>`
           // content: `<translation>Test Translation #${TEST_RESPONSE_COUNTER}</translation>`
-        }
-      }]
+        },
+      }],
     };
   }
 
@@ -4694,8 +5153,8 @@ function generateTestResponse(modelId, messages) {
   return {
     choices: [{
       message: {
-        content: `### Default LLM response ###`
-      }
-    }]
+        content: `### Default test endpoint LLM response ###`,
+      },
+    }],
   };
 }
