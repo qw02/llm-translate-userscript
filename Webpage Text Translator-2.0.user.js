@@ -3,11 +3,11 @@
 // @author       Qing Wen
 // @homepage     https://github.com/qw02/llm-translate-userscript
 // @namespace    https://github.com/qw02
-// @version      2.1
+// @version      2.2
 // @description  Translates webnovels with LLM using a RAG pipeline.
 // @match        https://*.syosetu.com/*/*/
 // @match        https://kakuyomu.jp/works/*/episodes/*
-// @match        file:///C:/Code/JS/Userscripts/tl-us-test.html
+// @match        file:///*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM.xmlHttpRequest
@@ -16,11 +16,46 @@
 'use strict';
 
 /* ================================================================================
-   Config
+   Constants
    ================================================================================*/
+
+// External API Rate limits
+const MAX_CONCURRENCY = 10;
+const MAX_CALLS_PER_SEC = 10;
+const MAX_RETRIES = 3; // Per call retry. Counts all, including HTTP 429, server errors, etc.
+const BASE_RETRY_DELAY_MS = 1000; // Simple exponential backoff
+
+// Chunk size (num chars) for glossary generation. Low values can result in higher number of calls during merge process
+// 1~5k works for large models (DS V3, GPT-5, Gemini2.5 Pro etc.)
+// Reduce to 100~500 for small (<20b) models
+const GLOSSARY_CHUNK_SIZE = 4000;
+
+// Chunk size for segmentation for translation
+const BATCH_CHAR_LIMIT = 1500;
+// How many paragraphs to include from the end of the previous batch
+const OVERLAP_PARAGRAPH_COUNT = 5;
+
+// Used as prefix to HTML id names to prevent collision with existing on the page
+const SCRIPT_PREFIX = 'us-123456-';
 
 // Populated with avaliable models (those with API keys set) on load
 const modelsList = [];
+
+// Set to true to show test models in selectors
+// These sent the call to an internal echo, see 'Test' section at bottom for details
+const TEST_MODE = false;
+
+// Info to log to console
+const LOG_LLM = {
+  system: false,
+  user: true,
+  reasoning: false,
+  assistant: true,
+}
+
+/* ================================================================================
+   Config
+   ================================================================================*/
 
 // API keys loaded during init from storage
 const PROVIDER_API_CONFIG = {
@@ -52,10 +87,6 @@ const PROVIDER_API_CONFIG = {
     apiKey: null,
     endpoint: 'https://nano-gpt.com/api/v1/chat/completions',
   },
-  test: {
-    apiKey: null,
-    endpoint: 'https://api.example.test/v1/chat/completions',
-  },
 };
 
 const PROVIDER_CONFIGS = {
@@ -69,6 +100,8 @@ const PROVIDER_CONFIGS = {
       { id: '1-6', model: 'deepseek/deepseek-v3.2-exp', label: 'DeepSeek V3.2 (R)', 'providers': ['DeepInfra', 'DeepSeek', 'Novita'], reasoning: true, tokens: 8192 },
       { id: '1-7', model: 'x-ai/grok-4-fast', label: 'Grok 4 Fast (R)', 'providers': ['xAI'], reasoning: true, tokens: 8192 },
       { id: '1-8', model: 'x-ai/grok-4-fast', label: 'Grok 4 Fast', 'providers': ['xAI'], reasoning: false },
+      { id: '1-9', model: 'z-ai/glm-4.6', label: 'GLM 4.6', 'providers': ['z-ai'], tokens: 8192 },
+      { id: '1-10', model: 'anthropic/claude-sonnet-4.5', label: 'Sonnet 4.5' },
     ],
     limits: {
       stage1: 'all',
@@ -94,7 +127,7 @@ const PROVIDER_CONFIGS = {
   deepseek: {
     models: [
       { id: '4-1', model: 'deepseek-chat', label: 'DeepSeek V3.2 Exp (R: Off)', reasoning: false },
-      { id: '4-3', model: 'deepseek-reasoner', label: 'DeepSeek V3.2 Exp (R: On)', reasoning: true, tokens: 16384 },
+      { id: '4-3', model: 'deepseek-reasoner', label: 'DeepSeek V3.2 Exp (R: On)', reasoning: true, tokens: 8192 },
     ],
     limits: {
       stage1: 'all',
@@ -147,7 +180,7 @@ const PROVIDER_CONFIGS = {
   nanogpt: {
     models: [
       { id: '7-1', model: 'deepseek-ai/deepseek-v3.2-exp', label: '[NG] DeepSeek V3.2 (R: Off)' },
-      { id: '7-2', model: 'deepseek-ai/deepseek-v3.2-exp-thinking', label: '[NG] DeepSeek V3.2 (R: On)' },
+      { id: '7-2', model: 'deepseek-ai/deepseek-v3.2-exp-thinking', label: '[NG] DeepSeek V3.2 (R: On)', tokens: 8192  },
       { id: '7-3', model: 'moonshotai/Kimi-K2-Instruct-0905', label: '[NG] Kimi K2 0905' },
       { id: '7-4', model: 'z-ai/glm-4.6', label: '[NG] GLM 4.6' },
     ],
@@ -158,43 +191,7 @@ const PROVIDER_CONFIGS = {
       stage3b: 'all',
     },
   },
-  test: {
-    models: [
-      { id: '99-1', model: 'test-model-1', label: 'Test Model #1' },
-      { id: '99-2', model: 'test-model-2', label: 'Test Model #2' },
-      { id: '99-3', model: 'test-model-3', label: 'Test Model #3' },
-      { id: '99-4', model: 'test-model-4', label: 'Test Model #4' },
-    ],
-    limits: {
-      stage1: 'all',
-      stage2: 'all',
-      stage3a: 'all',
-      stage3b: 'all',
-    },
-  },
 };
-
-/* ================================================================================
-   Constants
-   ================================================================================*/
-
-// External API Rate limits
-const MAX_CONCURRENCY = 10;       // concurrent in-flight calls
-const MAX_CALLS_PER_SEC = 10;     // calls/sec ceiling (token bucket)
-const MAX_RETRIES = 3;            // per-call retry limit
-const BASE_RETRY_DELAY_MS = 400;  // base backoff delay
-
-// Chunk size (num chars) for glossary generation. Low values can result in higher number of calls during merge process
-// 1~5k works for large models (DS V3, GPT-5, Gemini2.5 Pro etc.
-// Reduce to 100~500 for small (<20b) models
-const GLOSSARY_CHUNK_SIZE = 4000;
-
-// Chunk size for translation.
-const BATCH_CHAR_LIMIT = 1500;
-// How many paragraphs to include from the end of the previous batch.
-const OVERLAP_PARAGRAPH_COUNT = 5;
-
-const scriptPrefix = 'us-123456-'; // id prefix to prevent collision with existing HTML element on the page
 
 /* ================================================================================
    LLM API
@@ -301,15 +298,25 @@ class LLMClient {
           if (res.status >= 200 && res.status < 300) {
             resolve(res.response);
           } else {
+            // Log HTTP error details for debugging
+            console.error('HTTP Request Failed:', {
+              url: url,
+              status: res.status,
+              statusText: res.statusText,
+              response: res.response,
+              responseText: res.responseText,
+            });
             const error = new Error(`HTTP error! status: ${res.status} ${res.statusText}`);
             error.response = res;
             reject(error);
           }
         },
-        onerror: (res) => {
-          reject(new Error(`Network error: ${res.error || 'Unknown GM.xmlHttpRequest error'}`));
+        onerror: () => {
+          console.error('Network Request Failed:', { url: url });
+          reject(new Error('Network error: request failed (no response received)'));
         },
         ontimeout: () => {
+          console.error('Request Timed Out:', { url: url });
           reject(new Error('Request timed out'));
         },
       });
@@ -324,19 +331,23 @@ class LLMClient {
     const systemMsg = messages.find(m => m.role === 'system')?.content || '';
     const userMsg = messages.find(m => m.role === 'user')?.content || '';
 
-    const logParts = [
-      `[System]:\n${systemMsg}`,
-      '-'.repeat(80),
-      `[User]:\n${userMsg}`,
-    ];
+    const sections = [];
 
-    if (reasoning) {
-      logParts.push('-'.repeat(80), `[Reasoning]:\n${reasoning}`);
-    }
+    if (systemMsg && LOG_LLM.system) sections.push({ title: '[System]', content: systemMsg });
 
-    logParts.push('-'.repeat(80), `[Assistant]:\n${completion}`, '='.repeat(80));
+    if (userMsg && LOG_LLM.user) sections.push({ title: '[User]', content: userMsg });
 
-    console.log(logParts.join('\n'));
+    if (reasoning && LOG_LLM.reasoning) sections.push({ title: '[Reasoning]', content: reasoning });
+
+    if (completion && LOG_LLM.assistant) sections.push({ title: '[Assistant]', content: completion });
+
+    if (!sections.length) return;
+
+    const logText = sections
+      .map(section => `${section.title}:\n${section.content}`)
+      .join('\n' + '-'.repeat(80) + '\n');
+
+    console.log('='.repeat(80) + '\n' + logText);
   }
 }
 
@@ -349,7 +360,7 @@ class LLMClient {
  */
 function createOpenAIApiAdapter(overrides = {}) {
   const {
-    modifyHeaders = (headers, apiKey) => ({ ...headers, 'Authorization': `Bearer ${apiKey}` }),
+    modifyHeaders = (headers) => headers,
     modifyPayload = (payload, modelConfig) => payload,
     modifyResponse = (response) => ({
       completion: response.choices?.[0]?.message?.content ?? '',
@@ -371,9 +382,14 @@ function createOpenAIApiAdapter(overrides = {}) {
       // Provider-specific payload tweaks
       payload = modifyPayload(payload, modelConfig);
 
+      // Construct request headers
+      let headers = { 'Content-Type': 'application/json' };
+      headers = modifyHeaders(headers);
+      headers['Authorization'] = `Bearer ${apiKey}`;
+
       return {
         url: endpoint,
-        headers: modifyHeaders({ 'Content-Type': 'application/json' }, apiKey),
+        headers: headers,
         payload: payload,
       };
     },
@@ -396,16 +412,26 @@ const ApiAdapters = {
   deepseek: createOpenAIApiAdapter(),
 
   openrouter: createOpenAIApiAdapter({
+    modifyHeaders(headers, apiKey) {
+      return {
+        ...headers,
+        'HTTP-Referer': 'https://github.com/qw02/llm-translate-userscript',
+        'X-Title': 'Translation Userscript',
+      };
+    },
+
     modifyPayload(payload, modelConfig) {
-      payload.provider = {
-        order: modelConfig.providers,
-        allow_fallbacks: false,
+      if (modelConfig.providers) {
+        payload.provider = {
+          order: modelConfig.providers,
+          allow_fallbacks: false,
+        }
       }
 
       // Handle reasoning config
       const reasoningConfig = modelConfig.reasoning;
 
-      if (reasoningConfig !== undefined) {
+      if (reasoningConfig !== undefined) { // config can have value: false
         const reasoningPayload = {};
         const configType = typeof reasoningConfig;
 
@@ -937,18 +963,18 @@ const DOMAIN_CONFIGS = {
     extractText: () => {
       const paragraphMap = new Map();
       const pElements = Array.from(document.body.querySelectorAll('p'));
+      let idCounter = 1;
 
       pElements.forEach(p => {
         const processedText = new TextPreProcessor(p.textContent)
-          .normalizeText()
-          .processRubyAnnotations()
-          .removeBrTags()
-          .removeNonTextChars()
-          .trim()
           .getText();
 
         if (p.id) {
           paragraphMap.set(p.id, processedText);
+        } else {
+          const generatedId = `${SCRIPT_PREFIX}${idCounter++}`;
+          p.id = generatedId;
+          paragraphMap.set(generatedId, processedText);
         }
       });
       return paragraphMap;
@@ -979,7 +1005,7 @@ const DOMAIN_CONFIGS = {
             .trim()
             .getText();
 
-          if (p.id) {
+          if (p.id && processedText) {
             paragraphMap.set(p.id, processedText);
           }
         });
@@ -1285,19 +1311,11 @@ function loadDictionary(domainManager) {
 }
 
 function saveDictionary(domainManager, dictionary) {
-  const sortEntriesByValueLength = (dict) => {
-    return {
-      ...dict,
-      entries: [...dict.entries].sort((a, b) => b.value.length - a.value.length),
-    };
-  }
-
   const seriesId = domainManager.getCurrentSeriesId();
-  const sortedDict = sortEntriesByValueLength(dictionary);
 
   if (seriesId) {
     const dictionaryKey = domainManager.getDictionaryKey(seriesId);
-    GM_setValue(dictionaryKey, sortedDict);
+    GM_setValue(dictionaryKey, dictionary);
   } else {
     console.error('Failed to extract series ID from URL');
   }
@@ -1429,7 +1447,7 @@ function updateParagraphContent(id, newContent) {
   const paragraph = document.getElementById(id);
   if (paragraph) {
     paragraph.innerHTML = newContent;
-    paragraph.classList.add(`${scriptPrefix}text`);
+    paragraph.classList.add(`${SCRIPT_PREFIX}text`);
   }
 }
 
@@ -1512,7 +1530,7 @@ class Stage1Generator {
         chunks.push(currentChunk);
         currentChunk = text;
       } else {
-        currentChunk += (currentChunk ? '\n\n' : '') + text;
+        currentChunk += (currentChunk ? '\n' : '') + text;
       }
     }
 
@@ -1643,6 +1661,7 @@ function validateStage1Response(obj) {
 }
 
 // Minimal async mutex to separate pending entries selection / schedulding from dictionary update / mutation
+// Technically not requried since the 2 critical sections are currently not async (find new pending), (execute update actions)
 class AsyncMutex {
   constructor() {
     this._locked = false;
@@ -1678,11 +1697,11 @@ class AsyncMutex {
 
 /**
  * Stage 2: Merge new entries with existing dictionary (parallel, lock-safe)
- * - Part 1: Select the largest possible batch of non-conflicting new entries.
+ * - 1) Select the largest possible batch of non-conflicting new entries.
  *   - Zero-conflict entries are added immediately (no LLM).
  *   - Conflicting entries are sent to LLM (in parallel via RequestQueue).
- * - Part 2: Send LLM requests for all selected conflicting entries.
- * - Part 3: When a request resolves, apply changes under a mutex, unlock keys, then try to schedule more.
+ * - 2) Send LLM requests for all selected conflicting entries.
+ * - 3) When a request resolves, apply changes under a mutex, unlock keys, then try to schedule more.
  *
  * Locking model:
  * - For each new entry E with conflicts, lock set L(E) = keys(E) ∪ ⋃ keys(conflict entries of E).
@@ -2246,7 +2265,8 @@ class PromptManager {
   _buildBasePrompts() {
     // --- For Translation ---
     this.baseTranslationSystem = `
-You are a highly skilled translator specializing in Japanese web novels, tasked with translating sentences from Japanese to English. Your goal is to produce translations that are not only accurate but also capture the original tone, style, nuance, and character voices of the source text. You must ensure the output is fluent and natural-sounding English.
+You are a highly skilled Japanese to English literature translator, tasked with translating text from Japanese to English. Aim to maintain the original tone, prose, nuance, and character voices of the source text as closely as possible.
+Do not under any circumstances localize anything by changing the original meaning or tone, stick strictly to translating the original tone, prose and language as closely as possible to the original text.
 `.trim();
 
     const instructions = {
@@ -2492,12 +2512,15 @@ ${this.uiConfig.customInstruction}
   /**
    * Generates the prompt for a chunking task.
    * @param {Array<{text: string, index: number}>} indexedParagraphs - The paragraphs for this batch.
+   * @param offset - The offset to subtract for mapping indices to lower range.
    * @returns {{system: string, user: string}}
    */
-  getChunkingPrompt(indexedParagraphs) {
-    const textBlock = indexedParagraphs.map(p => `[${p.index + 1}] ${p.text}`).join('\n');
-    const startIndex = indexedParagraphs[0]?.index + 1 || 1;
-    const endIndex = indexedParagraphs[indexedParagraphs.length - 1]?.index + 1 || 1;
+  getChunkingPrompt(indexedParagraphs, offset = 0) {
+    const textBlock = indexedParagraphs
+      .map(p => `[${p.index + 1 - offset}] ${p.text}`)
+      .join('\n');
+    const startIndex = indexedParagraphs[0]?.index + 1 - offset || 1;
+    const endIndex = indexedParagraphs[indexedParagraphs.length - 1]?.index + 1 - offset || 1;
 
     const userPrompt = `
 <text>
@@ -2526,11 +2549,6 @@ class TranslationStrategy {
    * @param {PromptManager} promptManager - The stateful prompt builder for the session.
    */
   constructor(uiConfig, promptManager) {
-    // this.queues = {};
-    // if (uiConfig.stage3a) {
-    //   this.chunkQueue = createStageQueue(uiConfig.stage3a, 'Text Chunking');
-    // }
-    // this.translationQueue = createStageQueue(uiConfig.stage3b, 'Translation');
     this._chunkQueue = null;
     this._translationQueue = null;
     this.uiConfig = uiConfig;
@@ -2654,7 +2672,19 @@ class ChunkingStrategy extends TranslationStrategy {
         endIndex = i;
       }
 
-      chunkingBatches.push(allParagraphs.slice(currentStartIndex, endIndex + 1));
+      const batch = allParagraphs.slice(currentStartIndex, endIndex + 1);
+      const actualStart = batch[0].index + 1;
+      const actualEnd = batch[batch.length - 1].index + 1;
+
+      // Calculate offset: map to start at 20 if actualStart >= 20, otherwise no offset
+      const offset = actualStart >= 20 ? actualStart - 20 : 0;
+
+      chunkingBatches.push({
+        batch,
+        offset,
+        actualStart,
+        actualEnd,
+      });
 
       // If we've processed the last paragraph, our work is done here
       if (endIndex >= allParagraphs.length - 1) {
@@ -2666,8 +2696,8 @@ class ChunkingStrategy extends TranslationStrategy {
       currentStartIndex = Math.max(currentStartIndex + 1, nextStartIndex);
     }
 
-    const chunkingPromises = chunkingBatches.map(batch => {
-      const prompt = this.promptManager.getChunkingPrompt(batch);
+    const chunkingPromises = chunkingBatches.map(({ batch, offset }) => {
+      const prompt = this.promptManager.getChunkingPrompt(batch, offset);
       return this.chunkQueue.enqueueTask(prompt);
     });
 
@@ -2678,18 +2708,63 @@ class ChunkingStrategy extends TranslationStrategy {
     //  Part 2: Merge the fuzzy suggestions into clean intervals
 
     const llmSuggestions = [];
-    for (const result of chunkingResults) {
+    for (let i = 0; i < chunkingResults.length; i++) {
+      const result = chunkingResults[i];
+      const { offset, actualStart, actualEnd } = chunkingBatches[i];
+
       if (result.ok) {
         try {
           const suggestions = JSON.parse(result.response);
-          if (Array.isArray(suggestions)) {
-            llmSuggestions.push(...suggestions);
+          if (Array.isArray(suggestions) && suggestions.length > 0) {
+            // Validate and reverse the mapping
+            const unmappedSuggestions = [];
+            let isValid = true;
+
+            for (const interval of suggestions) {
+              // Validate interval structure
+              if (!Array.isArray(interval) || interval.length !== 2) {
+                isValid = false;
+                break;
+              }
+
+              const [start, end] = interval;
+
+              if (typeof start !== 'number' || typeof end !== 'number') {
+                isValid = false;
+                break;
+              }
+
+              // Reverse the mapping
+              const unmappedStart = start + offset;
+              const unmappedEnd = end + offset;
+
+              // Validate that unmapped values are within expected range
+              if (unmappedStart < actualStart || unmappedEnd > actualEnd || unmappedStart > unmappedEnd) {
+                console.warn(`Interval [${unmappedStart}, ${unmappedEnd}] out of range [${actualStart}, ${actualEnd}] for batch ${i}`);
+                isValid = false;
+                break;
+              }
+
+              unmappedSuggestions.push([unmappedStart, unmappedEnd]);
+            }
+
+            if (isValid) {
+              llmSuggestions.push(unmappedSuggestions);
+            } else {
+              console.warn(`Invalid interval structure for batch ${i}, pushing empty array`);
+              llmSuggestions.push([]);
+            }
+          } else {
+            // Empty or invalid suggestions array
+            llmSuggestions.push([]);
           }
         } catch (e) {
-          console.warn('Invalid LLM response format:', result.response, e);
+          console.warn(`Invalid LLM response format for batch ${i}:`, result.response, e);
+          llmSuggestions.push([]);
         }
       } else {
-        console.error('A chunking request failed:', result.error);
+        console.error(`Chunking request for batch ${i} failed:`, result.error);
+        llmSuggestions.push([]);
       }
     }
 
@@ -2857,6 +2932,7 @@ function generateMetadata(text, dictionary) {
  * Returns: Array<[start, end]> covering [1..N] with no gaps/overlaps.
  */
 const mergeFuzzyIntervals = ({ totalParagraphs, llmSuggestions, fuzz = 2, fallbackSize = 60 }) => {
+  console.log(`Merging the following intervals: ${JSON.stringify(llmSuggestions)}`);
   const N = Number(totalParagraphs || 0);
   if (!Number.isInteger(N) || N <= 0) {
     throw new Error("totalParagraphs must be a positive integer");
@@ -3104,11 +3180,13 @@ const mergeFuzzyIntervals = ({ totalParagraphs, llmSuggestions, fuzz = 2, fallba
 
   if (rawPairs.length === 0) {
     // Hard fallback
+    console.warn('Unable to read LLM splitting suggestions, using fallback.');
     return chunkEveryK(fallbackSize);
   }
 
   const intervals = normalizeIntervals(rawPairs);
   if (intervals.length === 0) {
+    console.warn('Unable to read LLM splitting suggestions, using fallback.');
     return chunkEveryK(fallbackSize);
   }
 
@@ -3122,9 +3200,11 @@ const mergeFuzzyIntervals = ({ totalParagraphs, llmSuggestions, fuzz = 2, fallba
 
   // If everything went sideways (extremely unlikely), fall back.
   if (finalChunks.length === 0) {
+    console.warn('Unable to read LLM splitting suggestions, using fallback.');
     return chunkEveryK(fallbackSize);
   }
 
+  console.log(`Merged intervals for splitting: ${JSON.stringify(finalChunks)}`);
   return finalChunks;
 };
 
@@ -3633,6 +3713,7 @@ function createCustomInstructionsDialog() {
   return overlay;
 }
 
+// Allows expand / collpase toggle for 'Models' and 'Options'
 function createCollapsibleSection(title, content) {
   const section = document.createElement('div');
   section.style.cssText = `
@@ -3916,6 +3997,7 @@ function createOptionsSection(availableModels) {
   return container;
 }
 
+// Parent container for 'Models' and 'Options' sections combined
 function createUIContainer(availableModels) {
   const parentContainer = document.createElement('div');
   parentContainer.style.cssText = `
@@ -3956,6 +4038,11 @@ function createUIContainer(availableModels) {
 
   return parentContainer;
 }
+
+/* ================================================================================
+   UI State Persistance
+   Save and load logic for settings to/from disk
+   ================================================================================*/
 
 async function loadUIState() {
   try {
@@ -4174,6 +4261,7 @@ async function initializeUI(floatingBox) {
   setupUIEventListeners();
 }
 
+// 'API Keys' / 'Dictionary' / 'Start translation' button
 function createButton(label, onClick) {
   const button = document.createElement('button');
   button.textContent = label;
@@ -4267,7 +4355,7 @@ function openApiKeysDialog() {
     `;
 
     const input = document.createElement('input');
-    input.type = 'text';
+    input.type = 'password';
     input.placeholder = `Enter ${provider} API key...`;
     input.value = PROVIDER_API_CONFIG[provider].apiKey || '';
     input.style.cssText = `
@@ -4387,6 +4475,7 @@ function openApiKeysDialog() {
   document.body.appendChild(overlay);
 }
 
+// Pop-up dialog box for inspection and editing of glossary / dictionary
 function createDictionaryEditorDialog() {
   const domainManager = new DomainManager();
 
@@ -4845,18 +4934,19 @@ function createScrollableFloatingBox(topPos, leftPos) {
   return { wrapper, content };
 }
 
+// Custom CSS for translated text
 function addStyles() {
-  if (document.getElementById(`${scriptPrefix}-style`)) return;
+  if (document.getElementById(`${SCRIPT_PREFIX}-style`)) return;
   const style = document.createElement('style');
-  style.id = `${scriptPrefix}-style`;
+  style.id = `${SCRIPT_PREFIX}-style`;
   style.textContent = `
-    .${scriptPrefix}text {
-      font-family: "Georgia", serif;
+    .${SCRIPT_PREFIX}text {
+      font-family: "Lucida Sans", serif;
       text-indent: 1.5em;
+      padding: 5px 0 5px 0;
     }
-    .${scriptPrefix}text span {
+    .${SCRIPT_PREFIX}text span {
       display: block;
-      text-indent: 1.5em;
     }
   `;
   document.head.appendChild(style);
@@ -5031,6 +5121,29 @@ window.addEventListener('load', init);
     Test
    ================================================================================*/
 
+if (TEST_MODE) {
+  // Add test models to config
+  PROVIDER_API_CONFIG.test = {
+    apiKey: 'example-api-key',
+    endpoint: 'https://api.example.test/v1/chat/completions',
+  }
+
+  PROVIDER_CONFIGS.test = {
+    models: [
+      { id: '99-1', model: 'test-model-1', label: 'Test Model #1' },
+      { id: '99-2', model: 'test-model-2', label: 'Test Model #2' },
+      { id: '99-3', model: 'test-model-3', label: 'Test Model #3' },
+      { id: '99-4', model: 'test-model-4', label: 'Test Model #4' },
+    ],
+    limits: {
+      stage1: 'all',
+      stage2: 'all',
+      stage3a: 'all',
+      stage3b: 'all',
+    },
+  }
+}
+
 // Test counter for mock responses
 let TEST_RESPONSE_COUNTER = 0;
 
@@ -5043,7 +5156,37 @@ function generateTestResponse(modelId, messages) {
     return userMessage.split('Translate the following Japanese text into English:')[1];
   }
 
+  // Generate random intervals
   const simChunkerResponse = (userMessage) => {
+    // Helper random fake internal genrator
+    const generateIntervals = (s, e) => {
+      const X = 5;
+      const Y = 12;
+      const intervals = [];
+      let start = s;
+
+      while (start <= e) {
+        // Random length between X and Y
+        const length = Math.floor(Math.random() * (Y - X + 1)) + X;
+        let end = start + length - 1;
+
+        // If this would exceed N, just make the last interval end at N
+        if (end >= e) {
+          end = e;
+          intervals.push([start, end]);
+          break;
+        }
+
+        intervals.push([start, end]);
+        start = end + 1;
+      }
+
+      // Format with spaces: [1, 5] instead of [1,5]
+      const formatted = intervals.map(([a, b]) => `[${a}, ${b}]`).join(', ');
+      return `[${formatted}]`;
+    }
+
+    // Extract the starting and ending indices from prompt
     const lines = userMessage.split('\n');
     let X = null;
     let Y = null;
@@ -5056,35 +5199,7 @@ function generateTestResponse(modelId, messages) {
       }
     }
 
-
     return generateIntervals(X, Y);
-  }
-
-  const generateIntervals = (s, e) => {
-    const X = 5;
-    const Y = 12;
-    const intervals = [];
-    let start = s;
-
-    while (start <= e) {
-      // Random length between X and Y
-      const length = Math.floor(Math.random() * (Y - X + 1)) + X;
-      let end = start + length - 1;
-
-      // If this would exceed N, just make the last interval end at N
-      if (end >= e) {
-        end = e;
-        intervals.push([start, end]);
-        break;
-      }
-
-      intervals.push([start, end]);
-      start = end + 1;
-    }
-
-    // Format with spaces: [1, 5] instead of [1,5]
-    const formatted = intervals.map(([a, b]) => `[${a}, ${b}]`).join(', ');
-    return `[${formatted}]`;
   }
 
   const userMessage = messages.find(m => m.role === 'user')?.content || '';
@@ -5141,9 +5256,7 @@ function generateTestResponse(modelId, messages) {
     return {
       choices: [{
         message: {
-          content: `<translation>${extractOriginalRaw(userMessage)}</translation>`,
-          // content: `<translation>Test Translation #${TEST_RESPONSE_COUNTER}, Echo: ${extractOriginalRaw(userMessage)}</translation>`
-          // content: `<translation>Test Translation #${TEST_RESPONSE_COUNTER}</translation>`
+          content: `<translation>Test Translation #${TEST_RESPONSE_COUNTER}, Echo: ${extractOriginalRaw(userMessage)}</translation>`,
         },
       }],
     };
@@ -5153,7 +5266,7 @@ function generateTestResponse(modelId, messages) {
   return {
     choices: [{
       message: {
-        content: `### Default test endpoint LLM response ###`,
+        content: `Model ${modelId} default resposne.`,
       },
     }],
   };
