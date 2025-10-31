@@ -1,31 +1,112 @@
-# Web Novel Translator Userscript
+# LLM Web Novel Translator
 
-This userscript provides a powerful, in-browser solution for translating web novels from Japanese to English, using a Retrieval-Augmented Generation (RAG) pipeline powered by Large Language Models (LLMs).  It's designed to work directly on web novel websites, offering a seamless translation experience.
+Userscript that translates web novels using a multi-stage RAG pipeline using LLMs, designed to generate high-quality, translations for long-form content like entire novel series. Uses an automatically generated and updated internal glossary for consistency of translated names, terms, and proper nouns.
+
+Core pipeline:
+1.  **Generates new glossary entries:** Scans the chapter to build a persistent, series-specific dictionary for characters, locations, and terms.
+2.  **Updates the existing glossary:** Uses an agentic workflow to intelligently merge new terms and de-duplicate existing ones.
+3.  **Text chunking / segmentation:** Employs an LLM to semantically segment the chapter into coherent blocks of around 5 sentences or 200 chars.
+4.  **Translates:** Translates each chunk using the glossary as context, ensuring consistency.
 
 ## Features
 
-*   **Automatic Translation:** Translate Japanese web novel pages directly in your browser with a single click.
-*   **RAG Pipeline:** Employs a sophisticated RAG (Retrieval-Augmented Generation) system. This means it builds a dynamic glossary of terms (names, places, special items, etc.) from the novel itself. This glossary is used to improve the consistency and accuracy of the translation, especially for recurring elements.
-*   **Multi-Provider Support:** Supports multiple LLM providers:
-    *   **OpenRouter:**  Allows you to use a wide variety of models from different providers (e.g., Google's Gemini, Anthropic's Claude, OpenAI's GPT-4o, and many more).
-    *   **Anthropic:** Directly use Anthropic's Claude models.
-    *   **OpenAI:** Directly utilizes GPT-4o / GPT-4o-mini.
-*   **Model Selection:**  Offers a selection of LLM models for each stage of the translation process (glossary generation, glossary updating, and the main translation).  You can choose models based on your needs and preferences.
-*   **Persistent Glossary:**  The generated glossary is saved and reused across chapters of the same series, ensuring consistent translation of key terms throughout the novel.
-*   **In-Browser Glossary Editor:**  Provides an in-browser editor to manually view, edit, and refine the glossary.  This gives you fine-grained control over the translation of specific terms.
+-   **Consistent Translation:** Uses a persistent glossary (RAG) to ensure names and terminology are translated consistently across hundreds of chapters.
+-   **Multi-Provider Support:** Integrates with any OpenAI-compatible API, with built-in support for OpenRouter, Anthropic, DeepSeek, OpenAI, Google Gemini, xAI and NanoGPT.
+-   **Agentic Glossary Management:** Autonomously maintains and refines the translation glossary when script is ran on new chapters.
+-   **Configurable Pipeline:** Fine-tune every stage of the process by selecting different models for glossary generation, chunking, and final translation.
 
-## How to Use
+## Installation
 
-1.  **Install a Userscript Manager:** You'll need a userscript manager like Tampermonkey or Violentmonkey.
-2.  **Install the Script:** Install the userscript by copying the code from this repository and adding a new user script using the manager.
-3.  **Navigate to a Supported Novel Page:** Go to a chapter page on one of the supported websites (syosetu.com or kakuyomu.jp).
-4.  **Configure API Keys:** Click the "Manage API Keys" button that appears on the page.  Enter your API keys for the LLM providers you want to use (OpenRouter, Anthropic, OpenAI).  *Note: You only need keys for the providers you intend to use.*
-5.  **Select a Provider and Models:** Choose your preferred LLM provider and the desired models for each stage of the translation process (glossary generation, updating, and translation).
-6.  **Translate:** Click the "Translate" button. The script will begin translating the current chapter, replacing the Japanese text with English.
-7.  **Optional: Edit Glossary:** Click "Edit Metadata" to view and edit the glossary.  This is useful for fine-tuning the translation of specific terms.
+1.  Install a userscript manager extension for your browser, such as [Tampermonkey](https://www.tampermonkey.net/) or Greasemonkey.
+2.  Download the script [`webpage-translator-2.0.user.js`](https://github.com/qw02/llm-translate-userscript/raw/main/webpage-translator-2.0.user.js) and load it in the userscript manager.
 
-## Important Notes
+## Setup & Usage
 
-*   **API Keys:** You'll need to obtain API keys from the LLM providers you want to use.  This usually involves creating an account and potentially subscribing to a plan.
-*   **Cost:** Using LLMs can incur costs, depending on the provider and the models you choose.  Be aware of the pricing structure of your chosen provider.
-*   **Translation Quality:** While the RAG pipeline and LLMs significantly improve translation quality, especially for consistent terminology, it's not perfect.  The translation may still require some manual review and editing, particularly for nuanced language or complex sentences.
+This script uses your own API keys (BYOK).
+
+1.  **Set API Keys:** After installing, open a supported web novel page. A control panel will appear. Click the **`API Keys`** button and enter your key for at least one provider.
+2.  **Configure Pipeline:**
+    -   Open the **`Models`** section in the control panel.
+    -   Assign an LLM from an active provider to each stage of the pipeline.
+    -   To skip glossary generation on a per-translation basis, check "Skip Glossary Generation".
+3.  **(Optional) Adjust Options:** Open the **`Options`** section to control translation style (e.g., narrative voice, name order, honorifics). Custom instructions can also be added.
+4.  **Translate:** Click **`Start Translation`**.
+
+## For Developers: Extending the Script
+
+The script is designed to be easily extensible.
+
+### Supporting a New Website
+
+To add support for a new web novel site, add an entry to the `DOMAIN_CONFIGS` object. You need to implement two functions:
+
+-   `getSeriesId`: Extracts a unique ID for the novel series from the URL, used for the glossary key.
+-   `extractText`: Scrapes the page and returns a `Map` where keys are the paragraph element IDs and values are the raw text content.
+
+```javascript
+// Example for a new site
+'new-site.com': {
+  domainCode: '3', // A unique numeric code for the domain
+  getSeriesId: (url) => {
+    // Logic to parse the URL and return a series identifier
+    const match = url.match(/\/series\/(\d+)/);
+    return match ? match[1] : null;
+  },
+  extractText: () => {
+    // Logic to find and process all paragraph elements
+    const paragraphMap = new Map();
+    const pElements = document.querySelectorAll('.novel-content > p');
+    pElements.forEach(p => {
+      if (p.id) {
+        // It's recommended to preprocess text here (e.g., handle ruby tags)
+        paragraphMap.set(p.id, p.textContent);
+      }
+    });
+    return paragraphMap;
+  },
+},
+```
+
+### Adding a New Model
+
+To add a new model from an existing provider, find the provider's entry in `PROVIDER_CONFIGS` and add a new model object to the `models` array. The `id` must be unique across all providers.
+
+```javascript
+// Example for adding a new OpenAI model
+openai: {
+  models: [
+    // ... existing models
+    { id: '3-5', model: 'gpt-6-turbo', label: 'GPT-6 Turbo (New)' },
+  ],
+  limits: { /* ... define which stages this model can be used for ... */ }
+}
+```
+
+### Adding a New API Provider
+
+Adding a new provider requires creating an API adapter. Most modern providers use an OpenAI-compatible API, making this straightforward.
+
+1.  Add the provider's key and endpoint to `PROVIDER_API_CONFIG`.
+2.  Add a model list for the new provider in `PROVIDER_CONFIGS`.
+3.  Add an entry in `ApiAdapters`. For most cases, you can reuse `createOpenAIApiAdapter`.
+
+```javascript
+// For an OpenAI-compatible provider
+const ApiAdapters = {
+  // ... existing adapters
+  newprovider: createOpenAIApiAdapter(),
+};
+
+// For a provider with a unique request/response structure
+const ApiAdapters = {
+  // ... existing adapters
+  customprovider: {
+    buildRequest(endpoint, modelId, messages, modelConfig, apiKey) {
+      // Return an object with { url, headers, payload }
+    },
+    parseResponse(response) {
+      // Parse the raw response and return { completion, reasoning }
+    }
+  }
+};
+```
